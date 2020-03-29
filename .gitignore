@@ -1,1 +1,8 @@
+.Rhistory
+.#*
 .juliahistory
+*.rds
+*.d
+
+*_model
+*_output
