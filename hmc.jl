@@ -15,22 +15,23 @@ struct LikelihoodGrad
     grad
 end
 
-
+#TODO (ear) rewrite for dense metric
 function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Vector{Float64})::Float64
-    return L.l(z.q) + 0.5 * (z.p .* M)' * z.p
+    return L.l(z.q) + 0.5 * rhosharp(z.p, M)' * z.p
 end
 
-
+#TODO (ear) rewrite for dense metric
 function leapfrog(z::PSPoint, L::LikelihoodGrad,
                   ε::Float64, M::Vector{Float64})::PSPoint
     p_ = z.p - 0.5 * ε * L.grad(z.q)
-    q = z.q + ε * p_ .* M
+    q = z.q + ε * rhosharp(p_, M)
     p = p_ - 0.5 * ε * L.grad(q)
     return PSPoint(q, p)
 end
 
 
-function stancriterion(psharp_m, psharp_p, rho)
+function stancriterion(psharp_m::Vector{Float64}, psharp_p::Vector{Float64},
+                       rho::Vector{Float64})::Bool
     return psharp_p' * rho > 0 && psharp_m' * rho > 0
 end
 
@@ -54,7 +55,9 @@ function stan(ℓ, I, ndim, chains)
                          :energy => energies, :massmatrix => massmatrices)
 end
 
-function hmc(ℓ, I, ndim, M = ones(ndim))
+
+#TODO (ear) rewrite for dense metric
+function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
     IAdapt = I ÷ 2
 
     L = LikelihoodGrad(ℓ, q -> ForwardDiff.gradient(ℓ, q))
@@ -65,12 +68,13 @@ function hmc(ℓ, I, ndim, M = ones(ndim))
 
     N = Normal()
     U = Uniform()
+    #TODO (ear) write momenta generator function for dense metric
     zsample = PSPoint(q, rand(N, ndim) ./ sqrt.(M))
 
     ε = findepsilon(1.0, zsample, L, M)
     εbar = 0.0
     sbar = 0.0
-    μ = 2.302585092994046 # log(10)
+    μ = log(10)
     xbar = 0.0
 
     W = WelfordStates(zeros(ndim), zeros(ndim), 0)
@@ -85,18 +89,18 @@ function hmc(ℓ, I, ndim, M = ones(ndim))
     stepsizecounter = 0
 
     for i = 2:I
+        #TODO (ear) write momenta generator function for dense metric
         z = PSPoint(samples[i - 1, :], rand(N, ndim) ./ sqrt.(M))
         H0 = hamiltonian(L, z, M)
 
         zf = z
-        zb = zf
-
-        zsample = zf
-        zpr = zf
+        zb = z
+        zsample = z
+        zpr = z
 
         # Momentum and sharp momentum at forward end of forward subtree
         pff = z.p
-        psharpff = z.p .* M # dtau_dp
+        psharpff = rhosharp(z.p, M) # dtau_dp
 
         # Momentum and sharp momentum at backward end of forward subtree
         pfb = z.p
@@ -122,7 +126,6 @@ function hmc(ℓ, I, ndim, M = ones(ndim))
 
             rhof = zeros(length(rho))
             rhob = zeros(length(rho))
-
             lswsubtree = -Inf
 
             if rand(U) > 0.5
@@ -130,33 +133,26 @@ function hmc(ℓ, I, ndim, M = ones(ndim))
                 pbf = pff
                 psharpbf = psharpff
 
-                zf, validsubtree,
+                zf, zpr, validsubtree,
                 psharpfb, psharpff, rhof, pfb, pff,
                 nleapfrog, lswsubtree, α =
                     buildtree(depth, zf,
-                               psharpfb, psharpff, rhof, pfb, pff,
-                               H0, 1, ε, L, M, nleapfrog, lswsubtree, α)
-                zpr = zf
-
+                              psharpfb, psharpff, rhof, pfb, pff,
+                              H0, 1 * ε, L, M, nleapfrog, lswsubtree, α)
             else
                 rhof = rho
                 pfb = pbb
                 psharpfb = psharpbb
 
-                zb, validsubtree,
+                zb, zpr, validsubtree,
                 psharpbf, psharpbb, rhob, pbf, pbb,
                 nleapfrog, lswsubtree, α =
                     buildtree(depth, zb,
-                               psharpbf, psharpbb, rhob, pbf, pbb,
-                               H0, -1, ε, L, M, nleapfrog, lswsubtree, α)
-                zpr = zb
-
+                              psharpbf, psharpbb, rhob, pbf, pbb,
+                              H0, -1 * ε, L, M, nleapfrog, lswsubtree, α)
             end
 
-            if !validsubtree
-                break
-            end
-
+            !validsubtree && break
             depth += 1
 
             if lswsubtree > lsw
@@ -180,10 +176,7 @@ function hmc(ℓ, I, ndim, M = ones(ndim))
             rhoextended = rhof + pbf
             persist &= stancriterion(psharpbf, psharpff, rhoextended)
 
-            if !persist
-                break
-            end
-
+            !persist && break
         end # end while
 
         samples[i, :] = zsample.q
@@ -226,17 +219,17 @@ function hmc(ℓ, I, ndim, M = ones(ndim))
         end
 
     end # end for
-
     return samples, leaps, acceptstats, εs, treedepth, energy, M
 end
 
 
 function buildtree(depth::Int, z::PSPoint,
                     psharpbeg, psharpend, rho, pbeg, pend,
-                    H0::Float64, v::Int, ε::Float64, L, M::Vector{Float64},
+                    H0::Float64, ε::Float64, L, M::Vector{Float64},
                     nleapfrog::Int, logsumweight::Float64, α::Float64)
     if depth == 0
-        zpr = leapfrog(z, L, v * ε, M)
+        zpr = leapfrog(z, L, ε, M)
+        z = zpr
         nleapfrog += 1
 
         H = hamiltonian(L, zpr, M)
@@ -246,17 +239,17 @@ function buildtree(depth::Int, z::PSPoint,
         H - H0 > 1000.0 && (divergent = true)
 
         Δ = H0 - H
-        lsw = logsumexp(logsumweight, Δ)
+        logsumweight = logsumexp(logsumweight, Δ)
         α += Δ > 0.0 ? 1.0 : exp(Δ)
 
-        psharpbeg =  zpr.p .* M # dtau_dp
+        psharpbeg = rhosharp(zpr.p, M) # dtau_dp
         psharpend = psharpbeg
 
         rho += zpr.p
         pbeg = zpr.p
         pend = pbeg
 
-        return zpr, !divergent, psharpbeg, psharpend, rho, pbeg, pend, nleapfrog, lsw, α
+        return z, zpr, !divergent, psharpbeg, psharpend, rho, pbeg, pend, nleapfrog, logsumweight, α
     end
 
     lswinit = -Inf
@@ -265,44 +258,46 @@ function buildtree(depth::Int, z::PSPoint,
     rhoinit = zeros(length(rho))
     pinitend = similar(z.p)
 
-    zpr, validinit,
+    z, zpr, validinit,
     psharpbeg, psharpinitend, rhoinit, pbeg, pinitend,
     nleapfrog, lswinit, α =
         buildtree(depth - 1, z,
                    psharpbeg, psharpinitend, rhoinit, pbeg, pinitend,
-                   H0, v, ε, L, M, nleapfrog, lswinit, α)
+                   H0, ε, L, M, nleapfrog, lswinit, α)
 
     if !validinit
-        return z, false,
+        return zpr, zpr, false,
         psharpbeg, psharpend, rho, pbeg, pend,
         nleapfrog, logsumweight, α
     end
 
+    zfinalpr = z
     lswfinal = -Inf
 
     psharpfinalbeg = similar(z.p)
     rhofinal = zeros(length(rho))
     pfinalbeg = similar(z.p)
 
-    zfinal, validfinal,
+    z, zfinalpr, validfinal,
     psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
     nleapfrog, lswfinal, α =
-        buildtree(depth - 1, zpr,
+        buildtree(depth - 1, zfinalpr,
                    psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
-                   H0, v, ε, L, M, nleapfrog, lswfinal, α)
+                   H0, ε, L, M, nleapfrog, lswfinal, α)
 
     if !validfinal
-        return zpr, false,
+        return zfinalpr, zfinalpr, false,
         psharpbeg, psharpend, rho, pbeg, pend,
         nleapfrog, logsumweight, α
     end
 
     lswsubtree = logsumexp(lswinit, lswfinal)
+
     if lswfinal > lswsubtree
-        zpr = zfinal
+        zpr = zfinalpr
     else
         if rand(Uniform()) < exp(lswfinal - lswsubtree)
-            zpr = zfinal
+            zpr = zfinalpr
         end
     end
 
@@ -321,10 +316,10 @@ function buildtree(depth::Int, z::PSPoint,
     rhosubtree = rhofinal + pinitend
     persist &= stancriterion(psharpinitend, psharpend, rhosubtree)
 
-    return zpr, persist, psharpbeg, psharpend, rho, pbeg, pend, nleapfrog, logsumweight, α
+    return z, zpr, persist, psharpbeg, psharpend, rho, pbeg, pend, nleapfrog, logsumweight, α
 end
 
-
+#TODO (ear) rewrite for dense metric
 function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Vector{Float64})::Float64
     ndim = length(z.q)
     N = Normal()
@@ -332,9 +327,7 @@ function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Vector{Float
 
     zp = leapfrog(z, L, ε, M)
     H = hamiltonian(L, zp, M)
-    if isnan(H)
-        H = Inf
-    end
+    isnan(H) && (H = Inf)
 
     ΔH = H0 - H
     direction = ΔH > log(0.8) ? 1 : -1
@@ -345,9 +338,7 @@ function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Vector{Float
 
         zp = leapfrog(z, L, ε, M)
         H = hamiltonian(L, zp, M)
-        if isnan(H)
-            H = Inf
-        end
+        isnan(H) && (H = Inf)
 
         ΔH = H0 - H
         if direction == 1 && !(ΔH > log(0.8))
@@ -419,6 +410,12 @@ function adaptstepsize(adaptstat, counter, sbar, xbar, μ,
 end
 
 
+#TODO (ear) rewrite for dense metric
+function rhosharp(p::Vector{Float64}, M::Vector{Float64})
+    return p .* M
+end
+
+
 function log1pexp(a)
     if a > 0.0
         return a + log1p(exp(-a))
@@ -444,6 +441,7 @@ function logsumexp(a, b)
 end
 
 
+#TODO (ear) rewrite for dense metric
 struct WelfordStates
     m::Vector{Float64}
     s::Vector{Float64}
@@ -451,6 +449,7 @@ struct WelfordStates
 end
 
 
+#TODO (ear) rewrite for dense metric
 function accmoments(ws::WelfordStates, x::Vector{Float64})::WelfordStates
     n = ws.n + 1
     d = similar(x)
@@ -463,6 +462,7 @@ function accmoments(ws::WelfordStates, x::Vector{Float64})::WelfordStates
 end
 
 
+#TODO (ear) rewrite for dense metric
 function samplevariance(ws::WelfordStates, regularized = true)::Vector{Float64}
     if ws.n > 1
         σ = ws.s ./ (ws.n - 1)
