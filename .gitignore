@@ -4,6 +4,7 @@
 .juliahistory
 *.rds
 *.d
+*.json
 
 *_model
 *_output
