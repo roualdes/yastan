@@ -15,50 +15,42 @@ struct LikelihoodGrad
     grad
 end
 
-#TODO (ear) rewrite for dense metric
-function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Vector{Float64})::Float64
-    return L.l(z.q) + 0.5 * rhosharp(z.p, M)' * z.p
-end
 
-#TODO (ear) rewrite for dense metric
-function leapfrog(z::PSPoint, L::LikelihoodGrad,
-                  ε::Float64, M::Vector{Float64})::PSPoint
-    p_ = z.p - 0.5 * ε * L.grad(z.q)
-    q = z.q + ε * rhosharp(p_, M)
-    p = p_ - 0.5 * ε * L.grad(q)
-    return PSPoint(q, p)
-end
-
-
-function stancriterion(psharp_m::Vector{Float64}, psharp_p::Vector{Float64},
-                       rho::Vector{Float64})::Bool
-    return psharp_p' * rho > 0 && psharp_m' * rho > 0
-end
-
-
-function stan(ℓ, I, ndim, chains)
-    samples = SharedArray{Float64}(I, ndim, chains)
-    leaps = SharedArray{Float64}(I, chains)
-    acceptstats = SharedArray{Float64}(I, chains)
-    stepsizes = SharedArray{Float64}(I, chains)
-    depths = SharedArray{Float64}(I, chains)
-    energies = SharedArray{Float64}(I, chains)
+function stan(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2, chains = 4)
+    samples = SharedArray{Float64}(iters, chains, ndim)
+    leaps = SharedArray{Float64}(iters, chains)
+    acceptstats = SharedArray{Float64}(iters, chains)
+    stepsizes = SharedArray{Float64}(iters, chains)
+    treedepths = SharedArray{Float64}(iters, chains)
+    energies = SharedArray{Float64}(iters, chains)
+    divergences = SharedArray{Bool}(iters, chains)
     massmatrices = SharedArray{Float64}(ndim, chains)
 
-    @distributed for c = 1:chains
-        samples[:, :, c], leaps[:, c], acceptstats[:, c],
-        stepsizes[:, c], depths[:, c], energies[:, c],
-        massmatrices[:, c] = hmc(ℓ, I, ndim)
+    @sync @distributed for chain = 1:chains
+        samples[:, chain, :], d = hmc(ℓ, ndim;
+                                      iters = iters, iterswarmup = iterswarmup)
+        leaps[:, chain] = d[:leapfrog]
+        acceptstats[:, chain] = d[:acceptstat]
+        stepsizes[:, chain] = d[:stepsize]
+        treedepths[:, chain] = d[:treedepth]
+        energies[:, chain] = d[:energy]
+        divergences[:, chain] = d[:divergent]
+        massmatrices[:, chain] = d[:massmatrix]
     end
-    return samples, Dict(:leapfrog => leaps, :acceptstat => acceptstats,
-                         :stepsize => stepsizes, :treedepth => depths,
-                         :energy => energies, :massmatrix => massmatrices)
+    return samples, Dict(:leapfrog => leaps,
+                         :acceptstat => acceptstats,
+                         :stepsize => stepsizes,
+                         :treedepth => treedepths,
+                         :energy => energies,
+                         :divergent => divergences,
+                         :massmatrix => massmatrices)
 end
 
 
 #TODO (ear) rewrite for dense metric
-function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
-    IAdapt = I ÷ 2
+function hmc(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2,
+             M::Vector{Float64} = ones(ndim))
+    I = iterswarmup + iters
 
     L = LikelihoodGrad(ℓ, q -> ForwardDiff.gradient(ℓ, q))
     q = initializesample(ndim, L)
@@ -68,8 +60,7 @@ function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
 
     N = Normal()
     U = Uniform()
-    #TODO (ear) write momenta generator function for dense metric
-    zsample = PSPoint(q, rand(N, ndim) ./ sqrt.(M))
+    zsample = PSPoint(q, generatemomentum(N, ndim, M))
 
     ε = findepsilon(1.0, zsample, L, M)
     εbar = 0.0
@@ -78,20 +69,21 @@ function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
     xbar = 0.0
 
     W = WelfordStates(zeros(ndim), zeros(ndim), 0)
-    openwindow, closewindow, lastwindow, windowstep = adaptionwindows(IAdapt)
+    openwindow, closewindow, lastwindow, windowstep = adaptionwindows(iterswarmup)
 
-    leaps::Vector{Int} = zeros(I)
     maxdepth = 10
-    treedepth::Vector{Int} = zeros(I)
-    energy = zeros(I)
+    leaps::Vector{Int} = zeros(I)
+    treedepths::Vector{Int} = zeros(I)
+    energies = zeros(I)
     acceptstats = zeros(I)
     εs = zeros(I)
+    global divergences = fill(false, I)
     stepsizecounter = 0
 
     for i = 2:I
-        #TODO (ear) write momenta generator function for dense metric
-        z = PSPoint(samples[i - 1, :], rand(N, ndim) ./ sqrt.(M))
+        z = PSPoint(samples[i - 1, :], generatemomentum(N, ndim, M))
         H0 = hamiltonian(L, z, M)
+        H = H0
 
         zf = z
         zb = z
@@ -135,7 +127,7 @@ function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
 
                 zf, zpr, validsubtree,
                 psharpfb, psharpff, rhof, pfb, pff,
-                nleapfrog, lswsubtree, α =
+                nleapfrog, lswsubtree, α  =
                     buildtree(depth, zf,
                               psharpfb, psharpff, rhof, pfb, pff,
                               H0, 1 * ε, L, M, nleapfrog, lswsubtree, α)
@@ -152,7 +144,9 @@ function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
                               H0, -1 * ε, L, M, nleapfrog, lswsubtree, α)
             end
 
-            !validsubtree && break
+            if !validsubtree
+                break
+            end
             depth += 1
 
             if lswsubtree > lsw
@@ -176,17 +170,19 @@ function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
             rhoextended = rhof + pbf
             persist &= stancriterion(psharpbf, psharpff, rhoextended)
 
-            !persist && break
+            if !persist
+                break
+            end
         end # end while
 
         samples[i, :] = zsample.q
-        energy[i] = hamiltonian(L, zsample, M)
-        treedepth[i] = depth
+        energies[i] = hamiltonian(L, zsample, M)
+        treedepths[i] = depth
         leaps[i] = nleapfrog
         εs[i] = ε
         acceptstats[i] = α / nleapfrog
 
-        if i <= IAdapt
+        if i <= iterswarmup
             ε, εbar, stepsizecounter, sbar, xbar =
                 adaptstepsize(acceptstats[i], stepsizecounter, sbar, xbar, μ)
 
@@ -219,7 +215,15 @@ function hmc(ℓ, I, ndim, M::Vector{Float64} = ones(ndim))
         end
 
     end # end for
-    return samples, leaps, acceptstats, εs, treedepth, energy, M
+
+    postwarmup = iterswarmup+1:I
+    return samples[postwarmup, :, :], Dict(:leapfrog => leaps[postwarmup],
+                                           :acceptstat => acceptstats[postwarmup],
+                                           :stepsize => εs[postwarmup],
+                                           :treedepth => treedepths[postwarmup],
+                                           :energy => energies[postwarmup],
+                                           :divergent => divergences[postwarmup],
+                                           :massmatrix => M)
 end
 
 
@@ -233,10 +237,14 @@ function buildtree(depth::Int, z::PSPoint,
         nleapfrog += 1
 
         H = hamiltonian(L, zpr, M)
-        isnan(H) && (H = Inf)
+        if isnan(H)
+            H = Inf
+        end
 
         divergent = false
-        H - H0 > 1000.0 && (divergent = true)
+        if H - H0 > 1000.0
+            divergent = true
+        end
 
         Δ = H0 - H
         logsumweight = logsumexp(logsumweight, Δ)
@@ -271,7 +279,6 @@ function buildtree(depth::Int, z::PSPoint,
         nleapfrog, logsumweight, α
     end
 
-    zfinalpr = z
     lswfinal = -Inf
 
     psharpfinalbeg = similar(z.p)
@@ -281,7 +288,7 @@ function buildtree(depth::Int, z::PSPoint,
     z, zfinalpr, validfinal,
     psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
     nleapfrog, lswfinal, α =
-        buildtree(depth - 1, zfinalpr,
+        buildtree(depth - 1, z,
                    psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
                    H0, ε, L, M, nleapfrog, lswfinal, α)
 
@@ -316,8 +323,38 @@ function buildtree(depth::Int, z::PSPoint,
     rhosubtree = rhofinal + pinitend
     persist &= stancriterion(psharpinitend, psharpend, rhosubtree)
 
-    return z, zpr, persist, psharpbeg, psharpend, rho, pbeg, pend, nleapfrog, logsumweight, α
+    return z, zpr, persist,
+    psharpbeg, psharpend, rho, pbeg, pend,
+    nleapfrog, logsumweight, α
 end
+
+
+#TODO (ear) rewrite for dense metric
+function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Vector{Float64})::Float64
+    return L.l(z.q) + 0.5 * rhosharp(z.p, M)' * z.p
+end
+
+#TODO (ear) rewrite for dense metric
+function leapfrog(z::PSPoint, L::LikelihoodGrad,
+                  ε::Float64, M::Vector{Float64})::PSPoint
+    p_ = z.p - 0.5 * ε * L.grad(z.q)
+    q = z.q + ε * rhosharp(p_, M)
+    p = p_ - 0.5 * ε * L.grad(q)
+    return PSPoint(q, p)
+end
+
+
+function stancriterion(psharp_m::Vector{Float64}, psharp_p::Vector{Float64},
+                       rho::Vector{Float64})::Bool
+    return psharp_p' * rho > 0 && psharp_m' * rho > 0
+end
+
+#TODO (ear) rewrite for dense metric
+function generatemomentum(N::Distribution{Univariate,Continuous},
+                          ndim::Int, M::Vector{Float64})::Vector{Float64}
+    return rand(N, ndim) ./ sqrt.(M)
+end
+
 
 #TODO (ear) rewrite for dense metric
 function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Vector{Float64})::Float64
@@ -333,7 +370,7 @@ function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Vector{Float
     direction = ΔH > log(0.8) ? 1 : -1
 
     while true
-        rp = rand(N, ndim) ./ sqrt.(M)
+        rp = generatemomentum(N, ndim, M)
         H0 = hamiltonian(L, z, M)
 
         zp = leapfrog(z, L, ε, M)
@@ -360,8 +397,8 @@ end
 function adaptionwindows(Madapt::Int; initpercent::Float64 = 0.15,
                          termpercent::Float64 = 0.1, windowstep::Int = 25)
     # TODO(ear) check, Madapt * termpercent > 20
-    openwindow::Int = 75 # floor(Madapt * initpercent)
-    lastwindow::Int = Madapt - 50 # ceil(Madapt * (1 - termpercent))
+    openwindow::Int = floor(Madapt * initpercent)
+    lastwindow::Int = ceil(Madapt * (1 - termpercent))
     return openwindow, openwindow + windowstep, lastwindow, windowstep
 end
 
@@ -374,7 +411,7 @@ function initializesample(ndim::Int, L::LikelihoodGrad,
     U = Uniform(-radius, radius)
 
     while a < attempts && !initialized
-        q = rand(U, ndim)
+        q = rand(U, size(q))
 
         lq = L.l(q)
         if isfinite(lq) && !isnan(lq)
