@@ -1,6 +1,7 @@
 # yastan
 
-Yet another implementation of Stan.
+Yet another implementation of the version of no U-turn Hamiltonian
+Monte Carlo algorithm behind Stan.
 
 ## Introduction
 
@@ -16,5 +17,5 @@ I'm using Julia 1.3.0 and the following packages
 * Distributed
 * FFTW
 
-There's a file named play.R which I use to compare my version of Stan
-to RStan's version of Stan.
+There's a file named play.R which I use to compare my implementation of Stan
+to the RStan (2.19.2) version of Stan.
