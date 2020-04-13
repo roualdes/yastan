@@ -75,8 +75,8 @@ function hmc(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2,
     openwindow, closewindow, lastwindow, windowstep = adaptionwindows(iterswarmup)
 
     maxdepth = 10
-    leaps::Vector{Int} = zeros(I)
-    treedepths::Vector{Int} = zeros(I)
+    leaps = zeros(Int, I)
+    treedepths = zeros(Int, I)
     energies = zeros(I)
     acceptstats = zeros(I)
     εs = zeros(I)
