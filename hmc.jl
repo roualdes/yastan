@@ -16,7 +16,8 @@ struct LikelihoodGrad
 end
 
 
-function stan(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2, chains = 4)
+function stan(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2, chains = 4,
+              M::Array{Float64} = ones(ndim))
     samples = SharedArray{Float64}(iters, chains, ndim)
     leaps = SharedArray{Float64}(iters, chains)
     acceptstats = SharedArray{Float64}(iters, chains)
@@ -28,7 +29,9 @@ function stan(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2, chains = 4)
 
     @sync @distributed for chain = 1:chains
         samples[:, chain, :], d = hmc(ℓ, ndim;
-                                      iters = iters, iterswarmup = iterswarmup)
+                                      iters = iters,
+                                      iterswarmup = iterswarmup,
+                                      M = M)
         leaps[:, chain] = d[:leapfrog]
         acceptstats[:, chain] = d[:acceptstat]
         stepsizes[:, chain] = d[:stepsize]
@@ -49,7 +52,7 @@ end
 
 #TODO (ear) rewrite for dense metric
 function hmc(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2,
-             M::Vector{Float64} = ones(ndim))
+             M::Array{Float64} = ones(ndim))
     I = iterswarmup + iters
 
     L = LikelihoodGrad(ℓ, q -> ForwardDiff.gradient(ℓ, q))
@@ -77,7 +80,7 @@ function hmc(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2,
     energies = zeros(I)
     acceptstats = zeros(I)
     εs = zeros(I)
-    global divergences = fill(false, I)
+    divergences = falses(I)
     stepsizecounter = 0
 
     for i = 2:I
@@ -145,6 +148,7 @@ function hmc(ℓ, ndim; iters = 2000, iterswarmup = iters ÷ 2,
             end
 
             if !validsubtree
+                divergences[i] = true
                 break
             end
             depth += 1
@@ -229,7 +233,7 @@ end
 
 function buildtree(depth::Int, z::PSPoint,
                     psharpbeg, psharpend, rho, pbeg, pend,
-                    H0::Float64, ε::Float64, L, M::Vector{Float64},
+                    H0::Float64, ε::Float64, L, M::Array{Float64},
                     nleapfrog::Int, logsumweight::Float64, α::Float64)
     if depth == 0
         zpr = leapfrog(z, L, ε, M)
@@ -329,18 +333,30 @@ function buildtree(depth::Int, z::PSPoint,
 end
 
 
-#TODO (ear) rewrite for dense metric
 function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Vector{Float64})::Float64
     return L.l(z.q) + 0.5 * rhosharp(z.p, M)' * z.p
 end
 
-#TODO (ear) rewrite for dense metric
+function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Matrix{Float64})::Float64
+    return L.l(z.q) + 0.5 * z.p' * M * z.p
+end
+
+
 function leapfrog(z::PSPoint, L::LikelihoodGrad,
-                  ε::Float64, M::Vector{Float64})::PSPoint
+                  ε::Float64, M::Array{Float64})::PSPoint
     p_ = z.p - 0.5 * ε * L.grad(z.q)
     q = z.q + ε * rhosharp(p_, M)
     p = p_ - 0.5 * ε * L.grad(q)
     return PSPoint(q, p)
+end
+
+
+function rhosharp(p::Vector{Float64}, M::Vector{Float64})
+    return p .* M
+end
+
+function rhosharp(p::Vector{Float64}, M::Matrix{Float64})
+    return M * p
 end
 
 
@@ -349,15 +365,19 @@ function stancriterion(psharp_m::Vector{Float64}, psharp_p::Vector{Float64},
     return psharp_p' * rho > 0 && psharp_m' * rho > 0
 end
 
-#TODO (ear) rewrite for dense metric
-function generatemomentum(N::Distribution{Univariate,Continuous},
+
+function generatemomentum(N::Distribution{Univariate, Continuous},
                           ndim::Int, M::Vector{Float64})::Vector{Float64}
     return rand(N, ndim) ./ sqrt.(M)
 end
 
+function generatemomentum(N::Distribution{Univariate, Continuous},
+                          ndim::Int, M::Matrix{Float64})::Vector{Float64}
+    return M \ rand(N, ndim)
+end
 
-#TODO (ear) rewrite for dense metric
-function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Vector{Float64})::Float64
+
+function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad, M::Array{Float64})::Float64
     ndim = length(z.q)
     N = Normal()
     H0 = hamiltonian(L, z, M)
@@ -447,12 +467,6 @@ function adaptstepsize(adaptstat, counter, sbar, xbar, μ,
 end
 
 
-#TODO (ear) rewrite for dense metric
-function rhosharp(p::Vector{Float64}, M::Vector{Float64})
-    return p .* M
-end
-
-
 function log1pexp(a)
     if a > 0.0
         return a + log1p(exp(-a))
@@ -478,29 +492,40 @@ function logsumexp(a, b)
 end
 
 
-#TODO (ear) rewrite for dense metric
-struct WelfordStates
-    m::Vector{Float64}
-    s::Vector{Float64}
+struct WelfordStates{S <: Vector{Float64}, T <: Array{Float64}}
+    m::S
+    s::T
     n::Int
 end
 
 
-#TODO (ear) rewrite for dense metric
-function accmoments(ws::WelfordStates, x::Vector{Float64})::WelfordStates
+function accmoments(ws::WelfordStates{Vector{Float64}, Vector{Float64}},
+                    x::Vector{Float64})::WelfordStates
     n = ws.n + 1
-    d = similar(x)
-    M = similar(x)
-    S = similar(x)
+    d = similar(ws.m)
+    M = similar(ws.m)
+    S = similar(ws.s)
     @. d = x - ws.m
     @. M = ws.m + d / n
     @. S = ws.s + d * (x - M)
     return WelfordStates(M, S, n)
 end
 
+function accmoments(ws::WelfordStates{Vector{Float64}, Matrix{Float64}},
+                    x::Vector{Float64})::WelfordStates
+    n = ws.n + 1
+    d = similar(ws.m)
+    M = similar(ws.m)
+    S = similar(ws.s)
+    @. d = x - ws.m
+    @. M = ws.m + d / n
+    S = ws.s .+ (x - M) * d'
+    return WelfordStates(M, S, n)
+end
 
-#TODO (ear) rewrite for dense metric
-function samplevariance(ws::WelfordStates, regularized = true)::Vector{Float64}
+
+function samplevariance(ws::WelfordStates{Vector{Float64}, Vector{Float64}},
+                        regularized = true)::Vector{Float64}
     if ws.n > 1
         σ = ws.s ./ (ws.n - 1)
         if regularized
@@ -509,4 +534,16 @@ function samplevariance(ws::WelfordStates, regularized = true)::Vector{Float64}
         return σ
     end
     return ones(length(ws.m))
+end
+
+function samplevariance(ws::WelfordStates{Vector{Float64}, Matrix{Float64}},
+                        regularized = true)::Matrix{Float64}
+    if ws.n > 1
+        σ = ws.s ./ (ws.n - 1)
+        if regularized
+            σ = (ws.n / (ws.n + 5.0)) * σ + 1.0e-3 * (5.0 / (ws.n + 5.0)) * one(σ)
+        end
+        return σ
+    end
+    return one(ws.s)
 end
