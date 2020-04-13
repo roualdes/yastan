@@ -1,20 +1,43 @@
-# 2-d unit Gaussian
-function isogaussian(θ)
-    A = [1.0 0.0; 0.0 1.0];
-    return 0.5 * θ' * A * θ
+using LinearAlgebra
+
+# TODO (ear) solve stupid 1d things going on
+function gaussian_(μ, σ)
+    c = 0.5 / (σ * σ)
+    return function(x)
+        d = x .- μ
+        return c * d .* d
+    end
+end
+
+function t_(nu::Float64, s::Float64)
+    return function(x)
+        n = 0.5 * x[1] * x[1]
+        ig = 0.5 * nu * x[2] + 0.5 * nu * s * s * exp(-x[2])
+        return n + ig
+    end
 end
 
 # correlated 2-d Gaussian
-function correlatedgaussian(θ)
+function anisotropicgaussian(θ)
     A = [50.251256 -24.874372;
          -24.874372 12.562814]
     # Σ = inv(A)
     return 0.5 * θ' * A * θ
 end
 
-# 250-d normal
-mvn = MvNormal(250, 1)
-highdgaussian(x) = logpdf(mvn, x)
+A = [1.0 1.98; 1.98 4.0]
+
+function mvgaussian_(μ::AbstractVector{Float64},
+                     Σ::AbstractMatrix{Float64})
+    return function(x)
+        M = Σ \ (x - μ)
+        return 0.5 * (x - μ)' * M
+    end
+end
+
+
+
+
 
 ## below needs lots of reviewing
 # logistic
