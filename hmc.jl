@@ -65,7 +65,7 @@ function stan(ℓ, ndim;
     treedepths = SharedArray{Float64}(I, chains)
     energies = SharedArray{Float64}(I, chains)
     divergences = SharedArray{Bool}(I, chains)
-    massmatrices = SharedArray{Float64}(ndim, chains)
+    massmatrices = SharedArray{Float64}(size(M)..., chains)
 
     @sync @distributed for chain in 1:control[:chains]
         control = merge(control, Dict(:chainid => chain))
@@ -76,7 +76,8 @@ function stan(ℓ, ndim;
         treedepths[:, chain] = d[:treedepth]
         energies[:, chain] = d[:energy]
         divergences[:, chain] = d[:divergent]
-        massmatrices[:, chain] = d[:massmatrix]
+        # TODO (ear) there's got to be a better way
+        massmatrices[fill((:), length(size(M)))..., chain] = d[:massmatrix]
     end
     return samples, Dict(:leapfrog => leaps,
                          :acceptstat => acceptstats,
