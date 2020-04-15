@@ -13,16 +13,16 @@ function main()
 
     for d in D
         S = Matrix(blockdiag([M for i in 1:d]...))
-        f = mvgaussian_(zeros(d), S)
-        metric = Matrix(Diagonal(ones(d)))
+        f = mvgaussian_(zeros(2d), S)
+        metric = Matrix(Diagonal(ones(2d)))
         essbulk = zeros(R)
         esstail = zeros(R)
         esssq = zeros(R)
         leapfrog = zeros(R)
         Qs = zeros(R, 3)
-        println("Starting ", d, " dimensions")
+        println("Starting ", 2d, " dimensions")
         for r in 1:R
-            samples, c = stan(f, 2*d; M = metric, control = control)
+            samples, c = stan(f, 2d; M = metric, control = control)
             s = samples[:, :, 2]
             essbulk[r] = ess_bulk(s)
             esstail[r] = ess_tail(s)
@@ -32,7 +32,7 @@ function main()
             Qs[r, :] = quantile(draws[:, 2], [0.1 0.5 0.9])
         end
         println("Writing data")
-        g = "anisogaussianC75/yastan/D$(2*d)/"
+        g = "anisogaussianC75/yastan/D$(2d)/"
         h5open("data.h5", "w") do file
             write(file, g * "essbulk", essbulk)
             write(file, g * "esstail", esstail)
