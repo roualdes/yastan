@@ -17,18 +17,8 @@ function t_(nu::Float64, s::Float64)
     end
 end
 
-# correlated 2-d Gaussian
-function anisotropicgaussian(θ)
-    A = [50.251256 -24.874372;
-         -24.874372 12.562814]
-    # Σ = inv(A)
-    return 0.5 * θ' * A * θ
-end
-
-A = [1.0 1.98; 1.98 4.0]
-
-function mvgaussian_(μ::AbstractVector{Float64},
-                     Σ::AbstractMatrix{Float64})
+function mvgaussian_(μ::Vector{Float64},
+                     Σ::Matrix{Float64})
     return function(x)
         M = Σ \ (x - μ)
         return 0.5 * (x - μ)' * M
