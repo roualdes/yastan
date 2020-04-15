@@ -261,7 +261,6 @@ function ess_tail(x)
     return min(q05_ess, q95_ess)
 end
 
-
 function ess_quantile(x, prob::Real)
     @assert prob >= 0 && prob <= 1
     I = x .<= quantile(x[:], prob)
@@ -272,9 +271,12 @@ function ess_mean(x)
     return ess(splitchains(x))
 end
 
+function ess_sq(x)
+    return ess(splitchains(x .^ 2))
+end
+
 function ess_std(x)
-    return min(ess(splitchains(x)),
-               ess(splitchains(x .^ 2)))
+    return min(ess_mean(x), ess_sq(x))
 end
 
 function mcse_quantile(x, prob::Real)
