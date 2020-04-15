@@ -22,7 +22,7 @@ function main()
         Qs = zeros(R, 3)
         println("Starting ", d, " dimensions")
         for r in 1:R
-            samples, c = stan(f, d; M = metric, control = control)
+            samples, c = stan(f, 2*d; M = metric, control = control)
             s = samples[:, :, 2]
             essbulk[r] = ess_bulk(s)
             esstail[r] = ess_tail(s)
