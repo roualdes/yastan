@@ -17,36 +17,42 @@ struct LikelihoodGrad
     grad
 end
 
+function maybeupdate!(c::Dict, s::Symbol, v)
+    if !haskey(c, s)
+        merge!(c, Dict(s => v))
+    end
+    return nothing
+end
 
-function checkcontrol(c)
+function checkcontrol(c::Dict)
+
+    c = convert(Dict{Any, Any}, c)
 
     # TODO (ear) add checks on all values
-    haskey(c, :iterations) || (c[:iterations] = 2000)
-    haskey(c, :iterations_warmup) || (c[:iterations_warmup] = c[:iterations] ÷ 2)
-    haskey(c, :chains) || (c[:chains] = 4)
-    haskey(c, :chainid) || (c[:chainid] = 1)
-    haskey(c, :rng) || (c[:rng] = PCGStateOneseq(UInt64, PCG_RXS_M_XS))
-    haskey(c, :maxtreedepth) || (c[:maxtreedepth] = 10)
-    haskey(c, :μ) || (c[:μ] = log(10))
-    haskey(c, :adaptinitpercent) || (c[:adaptinitpercent] = 0.15)
-    haskey(c, :adapttermpercent) || (c[:adapttermpercent] = 0.1)
-    haskey(c, :adaptwindowsize) || (c[:adaptwindowsize] = 25)
-    haskey(c, :initradius) || (c[:initradius] = 2)
-    haskey(c, :initattempts) || (c[:initattempts] = 100)
-    haskey(c, :chainid) || (c[:chainid] = 1)
-    haskey(c, :δ) || (c[:δ] = 0.8)
-    haskey(c, :γ) || (c[:γ] = 0.05)
-    haskey(c, :t0) || (c[:t0] = 10)
-    haskey(c, :κ) || (c[:κ] = 0.75)
-    haskey(c, :regularize) || (c[:regularize] = true)
+    maybeupdate!(c, :iterations, 2000)
+    maybeupdate!(c, :iterations_warmup, c[:iterations] ÷ 2)
+    maybeupdate!(c, :chains, 4)
+    maybeupdate!(c, :chainid, 1)
+    maybeupdate!(c, :rng, PCGStateOneseq(UInt64, PCG_RXS_M_XS))
+    maybeupdate!(c, :maxtreedepth, 10)
+    maybeupdate!(c, :μ, log(10))
+    maybeupdate!(c, :adaptinitpercent, 0.15)
+    maybeupdate!(c, :adapttermpercent, 0.1)
+    maybeupdate!(c, :adaptwindowsize, 25)
+    maybeupdate!(c, :initradius, 2)
+    maybeupdate!(c, :initattempts, 100)
+    maybeupdate!(c, :δ, 0.8)
+    maybeupdate!(c, :γ, 0.05)
+    maybeupdate!(c, :t0, 10)
+    maybeupdate!(c, :κ, 0.75)
+    maybeupdate!(c, :regularize, true)
 
     return c
 end
 
-
 function stan(ℓ, ndim;
               M::Array{Float64} = ones(ndim),
-              control::Dict{Any, Any} = Dict())
+              control::Dict = Dict())
 
     control = checkcontrol(control)
     I = control[:iterations] + control[:iterations_warmup]
@@ -82,10 +88,9 @@ function stan(ℓ, ndim;
                          :control => control)
 end
 
-
 function hmc(ℓ, ndim;
              M::Array{Float64} = ones(ndim),
-             control::Dict{Any, Any} = Dict())
+             control::Dict = Dict())
 
     control = checkcontrol(control)
     I = control[:iterations] + control[:iterations_warmup]
@@ -93,7 +98,7 @@ function hmc(ℓ, ndim;
     # advance RandomNumbers RNG
     # TODO (ear) figure out their type structure
     # and document this requirement.
-    advance!(control[:rng], convert(UInt64, 1 << 50) * control[:chainid])
+    advance!(control[:rng], convert(UInt64, 1 << 50 * control[:chainid]))
 
     L = LikelihoodGrad(ℓ, q -> ForwardDiff.gradient(ℓ, q))
     q = initializesample(ndim, L, control)
