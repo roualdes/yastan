@@ -20,7 +20,7 @@ function main()
     leapfrog = zeros(R)
     Qs = zeros(R, 3)
     for r in 1:R
-        time @elapsed samples, c = stan(f, d; M = metric, control = control)
+        time = @elapsed samples, c = stan(f, d; M = metric, control = control)
         s = samples[:, :, 2]
         essbulk[r] = ess_bulk(s)
         esstail[r] = ess_tail(s)
@@ -29,7 +29,7 @@ function main()
         draws = reshape(s, :, 2)
         Qs[r, :] = quantile(draws[:, 2], [0.1 0.5 0.9])
     end
-    g = "anisotropicgaussianC50/yastan/D$d/"
+    g = "anisotropicgaussianC50/yastan/"
     h5open("data.h5", "w") do file
         write(file, g * "essbulk", essbulk)
         write(file, g * "esstail", esstail)
