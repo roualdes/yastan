@@ -18,9 +18,10 @@ function main()
     esstail = zeros(R)
     esssq = zeros(R)
     leapfrog = zeros(R)
+    time = zeros(R)
     Qs = zeros(R, 3)
     for r in 1:R
-        time = @elapsed samples, c = stan(f, d; M = metric, control = control)
+        time[r] = @elapsed samples, c = stan(f, d; M = metric, control = control)
         s = samples[:, :, 2]
         essbulk[r] = ess_bulk(s)
         esstail[r] = ess_tail(s)
