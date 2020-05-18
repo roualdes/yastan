@@ -3,15 +3,15 @@ data {
   real<lower=0> s;
 }
 parameters {
-  real x_a;
-  real<lower=0> x_b;
+  real x1;
+  real<lower=0> x2;
 }
 
 transformed parameters {
-  real x = x_a * sqrt(x_b);
+  real x = x1 * sqrt(x2);
 }
 
 model {
-  x_a ~ normal(0, 1);
-  x_b ~ inv_gamma(0.5, 0.5);
+  x1 ~ normal(0, 1);
+  x2 ~ inv_gamma(nu * 0.5, nu * s * s * 0.5);
 }

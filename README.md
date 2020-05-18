@@ -12,8 +12,8 @@ I'm using Julia 1.3.0 and the following packages
 * Plots
 * Statistics
 * LinearAlgebra
-* Distributions
-* ForwardDiff
+* RandomNumbers
+* Zygote
 * Distributed
 * FFTW
 
