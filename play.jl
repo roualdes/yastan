@@ -18,30 +18,32 @@ includet("convergence.jl")
 includet("models.jl")
 
 
-ndim = 64
-Minv = Matrix(Diagonal(ones(ndim))); # ones(ndim);
 
-# set up model
-M = sparse([1.0 0.75; 0.75 1.0]);
-S = Matrix(blockdiag([M for i in 1:ndim/2]...));
-μ = zeros(ndim);
-
-f = mvgaussian_(μ, Matrix(S));
-
-normal_.(randn(10), 0, 10)
-
-function Normal_(x::Vector{Float64}, μ::Vector{Float64}, Σ::Matrix{Float64})
-    d = x - μ
-    return 0.5 * (d' * (Σ \ d))
+function funnel_(q, d)
+    Ny = normal_(d[:y], θ[:m], exp(-3 * θ[:s]))
+    Nm = normal_(θ[:m], 0, 1)
+    Ns = normal_(θ[:s], 0, 1)
+    return Ny + Nm + Ns
 end
 
-f(x) = Normal_(x, μ, S)
+d = Dict(:y => 0.5)
+
+f(q) = funnel_(q, )
+
+U = Uniform(-2, 2)
+
+for (k, v) in d
+    println(rand(U, size(v)))
+end
+
+
+
 
 # single chain
 samples, d = hmc(f, ndim;
-                 M = cholesky(Symmetric(Minv)).L,
+                 # M = cholesky(Symmetric(Minv)).L,
                  # M = Minv,
-                 control = Dict(:skewsymmetric => true, :iterations => 2000));
+                 control = Dict(:skewsymmetric => false, :iterations => 2000));
 
 samples2, d2 = hmc(f, ndim;
                  # M = cholesky(Symmetric(Minv)).L,
