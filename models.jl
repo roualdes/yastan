@@ -1,14 +1,20 @@
+# -log(density)
 using LinearAlgebra
 
-# TODO (ear) solve stupid 1d things going on
-function gaussian_(μ, σ)
-    c = 0.5 / (σ * σ)
-    return function(x)
-        d = x .- μ
-        return c * d .* d
-    end
+
+function normal_(x::Vector{Float64}, μ::Vector{Float64}, Σ::Matrix{Float64})
+    # TODO allow Σ a parameter
+    d = x - μ
+    return 0.5 * (d' * (Σ \ d))
 end
 
+function normal_(x::Real, μ::Real, σ::Real)
+    # TODO allow σ a parameter
+    d = x - μ
+    return 0.5 * (d' * d) / (σ * σ)
+end
+
+# TODO figure out how to incorporate reparameterizations? (is that what we should call these)
 function t_(nu::Float64, s::Float64)
     return function(x)
         n = 0.5 * x[1] * x[1]
@@ -17,15 +23,15 @@ function t_(nu::Float64, s::Float64)
     end
 end
 
-function mvgaussian_(μ::Vector{Float64},
-                     Σ::Matrix{Float64})
-    return function(x)
-        M = Σ \ (x - μ)
-        return 0.5 * (x - μ)' * M
-    end
+function normal_precision_(x::Vector{Float64}, μ::Vector{Float64}, Ω::Matrix{Float64})
+    d = x - μ
+    return 0.5 * (d' * Ω * d)
 end
 
-
+function normal_precision_(x::Real, μ::Real, ω::Real)
+    d = x - μ
+    return 0.5 * d * d * ω
+end
 
 
 
