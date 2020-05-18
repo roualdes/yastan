@@ -28,6 +28,8 @@ S = Matrix(blockdiag([M for i in 1:ndim/2]...));
 
 f = mvgaussian_(μ, Matrix(S));
 
+normal_.(randn(10), 0, 10)
+
 function Normal_(x::Vector{Float64}, μ::Vector{Float64}, Σ::Matrix{Float64})
     d = x - μ
     return 0.5 * (d' * (Σ \ d))
