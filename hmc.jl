@@ -1,6 +1,6 @@
 using LinearAlgebra
 using Distributions
-using ForwardDiff
+using Zygote
 using Random
 using RandomNumbers.PCG
 using Distributed
@@ -9,12 +9,6 @@ using Distributed
 struct PSPoint
     q::Vector{Float64}
     p::Vector{Float64}
-end
-
-
-struct LikelihoodGrad
-    l
-    grad
 end
 
 function maybeupdate!(c::Dict, s::Symbol, v)
@@ -46,13 +40,13 @@ function checkcontrol(c::Dict)
     maybeupdate!(c, :t0, 10)
     maybeupdate!(c, :κ, 0.75)
     maybeupdate!(c, :regularize, true)
+    maybeupdate!(c, :skewsymmetric, false)
 
     return c
 end
 
-function stan(ℓ, ndim;
-              M::Array{Float64} = ones(ndim),
-              control::Dict = Dict())
+function stan(U, ndim;
+              M::AbstractArray{Float64} = ones(ndim), control::Dict = Dict())
 
     control = checkcontrol(control)
     I = control[:iterations] + control[:iterations_warmup]
@@ -69,7 +63,8 @@ function stan(ℓ, ndim;
 
     @sync @distributed for chain in 1:control[:chains]
         control = merge(control, Dict(:chainid => chain))
-        samples[:, chain, :], d = hmc(ℓ, ndim; M = M, control = control)
+        samples[:, chain, :], d = hmc(U, ndim; M = M, control = control)
+
         leaps[:, chain] = d[:leapfrog]
         acceptstats[:, chain] = d[:acceptstat]
         stepsizes[:, chain] = d[:stepsize]
@@ -79,6 +74,7 @@ function stan(ℓ, ndim;
         # TODO (ear) there's got to be a better way
         massmatrices[fill((:), length(size(M)))..., chain] = d[:massmatrix]
     end
+
     return samples, Dict(:leapfrog => leaps,
                          :acceptstat => acceptstats,
                          :stepsize => stepsizes,
@@ -89,9 +85,8 @@ function stan(ℓ, ndim;
                          :control => control)
 end
 
-function hmc(ℓ, ndim;
-             M::Array{Float64} = ones(ndim),
-             control::Dict = Dict())
+function hmc(U, ndim;
+             M::AbstractArray{Float64} = ones(ndim), control::Dict = Dict())
 
     control = checkcontrol(control)
     I = control[:iterations] + control[:iterations_warmup]
@@ -101,23 +96,20 @@ function hmc(ℓ, ndim;
     # and document this requirement.
     advance!(control[:rng], convert(UInt64, 1 << 50 * control[:chainid]))
 
-    L = LikelihoodGrad(ℓ, q -> ForwardDiff.gradient(ℓ, q))
-    q = initializesample(ndim, L, control)
+    ∇U = q -> first(Zygote.gradient(U, q))
+    q = initializesample(ndim, U, ∇U, control)
 
     samples = zeros(I, ndim)
     samples[1, :] = q
-
-    N = Normal()
-    U = Uniform()
     zsample = PSPoint(q, generatemomentum(control[:rng], ndim, M))
 
-    ε = findepsilon(1.0, zsample, L, M, control)
+    ε = findepsilon(1.0, zsample, U, ∇U, M, control)
     μ = control[:μ]
     εbar = 0.0
     sbar = 0.0
     xbar = 0.0
 
-    W = WelfordStates(zeros(ndim), zero(M), 0)
+    W = WelfordState(zeros(ndim), zero(M), 0)
     openwindow, closewindow, lastwindow, windowstep =
         adaptionwindows(control)
 
@@ -131,7 +123,7 @@ function hmc(ℓ, ndim;
 
     for i = 2:I
         z = PSPoint(samples[i - 1, :], generatemomentum(control[:rng], ndim, M))
-        H0 = hamiltonian(L, z, M)
+        H0 = hamiltonian(U, z, M)
         H = H0
 
         zf = z
@@ -141,7 +133,11 @@ function hmc(ℓ, ndim;
 
         # Momentum and sharp momentum at forward end of forward subtree
         pff = z.p
-        psharpff = rhosharp(z.p, M) # dtau_dp
+        if control[:skewsymmetric]
+            psharpff = z.p # dtau_dp
+        else
+            psharpff = rhosharp(z.p, M) # dtau_dp
+        end
 
         # Momentum and sharp momentum at backward end of forward subtree
         pfb = z.p
@@ -179,8 +175,8 @@ function hmc(ℓ, ndim;
                 nleapfrog, lswsubtree, α  =
                     buildtree(depth, zf,
                               psharpfb, psharpff, rhof, pfb, pff,
-                              H0, 1 * ε, L, M,
-                              nleapfrog, lswsubtree, α, control[:rng])
+                              H0, 1 * ε, U, ∇U, M,
+                              nleapfrog, lswsubtree, α, control)
             else
                 rhof = rho
                 pfb = pbb
@@ -191,8 +187,8 @@ function hmc(ℓ, ndim;
                 nleapfrog, lswsubtree, α =
                     buildtree(depth, zb,
                               psharpbf, psharpbb, rhob, pbf, pbb,
-                              H0, -1 * ε, L, M,
-                              nleapfrog, lswsubtree, α, control[:rng])
+                              H0, -1 * ε, U, ∇U, M,
+                              nleapfrog, lswsubtree, α, control)
             end
 
             if !validsubtree
@@ -228,7 +224,7 @@ function hmc(ℓ, ndim;
         end # end while
 
         samples[i, :] = zsample.q
-        energies[i] = hamiltonian(L, zsample, M)
+        energies[i] = hamiltonian(U, zsample, M)
         treedepths[i] = depth
         leaps[i] = nleapfrog
         εs[i] = ε
@@ -245,10 +241,10 @@ function hmc(ℓ, ndim;
             if i == closewindow
                 # reset var
                 M = samplevariance(W, control)
-                W = WelfordStates(zeros(ndim), zero(M), 0)
+                W = WelfordState(zeros(ndim), zero(M), 0)
 
                 # reset stepsize
-                ε = findepsilon(ε, zsample, L, M, control)
+                ε = findepsilon(ε, zsample, U, ∇U, M, control)
                 μ = log(10 * ε)
                 sbar = 0.0
                 xbar = 0.0
@@ -281,14 +277,14 @@ end
 
 function buildtree(depth::Int, z::PSPoint,
                     psharpbeg, psharpend, rho, pbeg, pend,
-                    H0::Float64, ε::Float64, L, M::Array{Float64},
-                    nleapfrog::Int, logsumweight::Float64, α::Float64, rng)
+                    H0::Float64, ε::Float64, U, ∇U, M::AbstractArray{Float64},
+                    nleapfrog::Int, logsumweight::Float64, α::Float64, control)
     if depth == 0
-        zpr = leapfrog(z, L, ε, M)
+        zpr = leapfrog(z, ∇U, ε, M)
         z = zpr
         nleapfrog += 1
 
-        H = hamiltonian(L, zpr, M)
+        H = hamiltonian(U, zpr, M)
         if isnan(H)
             H = Inf
         end
@@ -302,7 +298,11 @@ function buildtree(depth::Int, z::PSPoint,
         logsumweight = logsumexp(logsumweight, Δ)
         α += Δ > 0.0 ? 1.0 : exp(Δ)
 
-        psharpbeg = rhosharp(zpr.p, M) # dtau_dp
+        if control[:skewsymmetric]
+            psharpbeg = z.p # dtau_dp
+        else
+            psharpbeg = rhosharp(z.p, M) # dtau_dp
+        end
         psharpend = psharpbeg
 
         rho += zpr.p
@@ -323,7 +323,7 @@ function buildtree(depth::Int, z::PSPoint,
     nleapfrog, lswinit, α =
         buildtree(depth - 1, z,
                    psharpbeg, psharpinitend, rhoinit, pbeg, pinitend,
-                   H0, ε, L, M, nleapfrog, lswinit, α, rng)
+                   H0, ε, U, ∇U, M, nleapfrog, lswinit, α, control)
 
     if !validinit
         return zpr, zpr, false,
@@ -342,7 +342,7 @@ function buildtree(depth::Int, z::PSPoint,
     nleapfrog, lswfinal, α =
         buildtree(depth - 1, z,
                    psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
-                   H0, ε, L, M, nleapfrog, lswfinal, α, rng)
+                   H0, ε, U, ∇U, M, nleapfrog, lswfinal, α, control)
 
     if !validfinal
         return zfinalpr, zfinalpr, false,
@@ -355,7 +355,7 @@ function buildtree(depth::Int, z::PSPoint,
     if lswfinal > lswsubtree
         zpr = zfinalpr
     else
-        if rand(rng) < exp(lswfinal - lswsubtree)
+        if rand(control[:rng]) < exp(lswfinal - lswsubtree)
             zpr = zfinalpr
         end
     end
@@ -380,56 +380,67 @@ function buildtree(depth::Int, z::PSPoint,
     nleapfrog, logsumweight, α
 end
 
-
-function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Vector{Float64})::Float64
-    return L.l(z.q) + 0.5 * rhosharp(z.p, M)' * z.p
-end
-
-function hamiltonian(L::LikelihoodGrad, z::PSPoint, M::Matrix{Float64})::Float64
-    return L.l(z.q) + 0.5 * z.p' * M * z.p
-end
-
-
-function leapfrog(z::PSPoint, L::LikelihoodGrad,
-                  ε::Float64, M::Array{Float64})::PSPoint
-    p_ = z.p - 0.5 * ε * L.grad(z.q)
+function leapfrog(z::PSPoint, ∇U, ε::Float64, M::Array{Float64})::PSPoint
+    p_ = z.p - 0.5 * ε * ∇U(z.q)
     q = z.q + ε * rhosharp(p_, M)
-    p = p_ - 0.5 * ε * L.grad(q)
+    p = p_ - 0.5 * ε * ∇U(q)
     return PSPoint(q, p)
 end
 
-
-function rhosharp(p::Vector{Float64}, M::Vector{Float64})
-    return p .* M
+function leapfrog(z::PSPoint, ∇U, ε::Float64,
+                  L::LowerTriangular{Float64,Matrix{Float64}})::PSPoint
+    p_ = z.p - 0.5 * ε * (L' * ∇U(z.q))
+    q = z.q + ε * rhosharp(p_, L)
+    p = p_ - 0.5 * ε * (L' * ∇U(q))
+    return PSPoint(q, p)
 end
 
-function rhosharp(p::Vector{Float64}, M::Matrix{Float64})
+function hamiltonian(U, z::PSPoint, M::Array{Float64})::Float64
+    return U(z.q) + 0.5 * (z.p' * rhosharp(z.p, M))
+end
+
+function hamiltonian(U, z::PSPoint, L::LowerTriangular{Float64,Matrix{Float64}})::Float64
+    return U(z.q) + 0.5 * (z.p' * z.p)
+end
+
+function rhosharp(p::Vector{Float64}, M::Vector{Float64})::Vector{Float64}
+    return M .* p
+end
+
+function rhosharp(p::Vector{Float64}, M::Matrix{Float64})::Vector{Float64}
     return M * p
 end
 
+function rhosharp(p::Vector{Float64}, L::LowerTriangular{Float64,Matrix{Float64}})::Vector{Float64}
+    return L * p
+end
 
 function stancriterion(psharp_m::Vector{Float64}, psharp_p::Vector{Float64},
                        rho::Vector{Float64})::Bool
     return psharp_p' * rho > 0 && psharp_m' * rho > 0
 end
 
-
 function generatemomentum(rng, ndim::Int, M::Vector{Float64})::Vector{Float64}
     return randn(rng, ndim) ./ sqrt.(M)
 end
 
 function generatemomentum(rng, ndim::Int, M::Matrix{Float64})::Vector{Float64}
-    return cholesky(Hermitian(M)).U \ randn(rng, ndim)
+    return cholesky(Symmetric(M)).U \ randn(rng, ndim)
+end
+
+function generatemomentum(rng, ndim::Int,
+                          L::LowerTriangular{Float64,Matrix{Float64}})::Vector{Float64}
+    return randn(rng, ndim)
 end
 
 
-function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad,
-    M::Array{Float64}, control)::Float64
+function findepsilon(ε::Float64, z::PSPoint, U, ∇U,
+                     M::AbstractArray{Float64}, control)::Float64
     ndim = length(z.q)
-    H0 = hamiltonian(L, z, M)
+    H0 = hamiltonian(U, z, M)
 
-    zp = leapfrog(z, L, ε, M)
-    H = hamiltonian(L, zp, M)
+    zp = leapfrog(z, ∇U, ε, M)
+    H = hamiltonian(U, zp, M)
     isnan(H) && (H = Inf)
 
     ΔH = H0 - H
@@ -437,10 +448,10 @@ function findepsilon(ε::Float64, z::PSPoint, L::LikelihoodGrad,
 
     while true
         rp = generatemomentum(control[:rng], ndim, M)
-        H0 = hamiltonian(L, z, M)
+        H0 = hamiltonian(U, z, M)
 
-        zp = leapfrog(z, L, ε, M)
-        H = hamiltonian(L, zp, M)
+        zp = leapfrog(z, ∇U, ε, M)
+        H = hamiltonian(U, zp, M)
         isnan(H) && (H = Inf)
 
         ΔH = H0 - H
@@ -474,7 +485,7 @@ function adaptionwindows(control)
 end
 
 
-function initializesample(ndim::Int, L::LikelihoodGrad, control)::Vector{Float64}
+function initializesample(ndim::Int, U, ∇U, control)::Vector{Float64}
     q = zeros(ndim)
     initialized = false
     a = 0
@@ -482,12 +493,12 @@ function initializesample(ndim::Int, L::LikelihoodGrad, control)::Vector{Float64
     while a < control[:initattempts] && !initialized
         q = generateuniform(control[:rng], length(q), control[:initradius])
 
-        lq = L.l(q)
+        lq = U(q)
         if isfinite(lq) && !isnan(lq)
             initialized = true
         end
 
-        gq = sum(L.grad(q))
+        gq = sum(∇U(q))
         if isfinite(gq) && !isnan(gq)
             initialized &= true
         end
@@ -544,41 +555,34 @@ function logsumexp(a, b)
     return b + log1pexp(a - b)
 end
 
+abstract type AbstractWelfordState{S, T} end
 
-struct WelfordStates{S<:Vector{Float64}, T<:Array{Float64}}
+struct WelfordState{S<:Vector{Float64}, T<:AbstractArray{Float64}} <: AbstractWelfordState{S, T}
     m::S
     s::T
     n::Int
 end
 
-
-function accmoments(ws::WelfordStates{Vector{Float64}, Vector{Float64}},
-                    x::Vector{Float64})::WelfordStates
+function accmoments(ws::AbstractWelfordState, x::Vector{Float64})::WelfordState
     n = ws.n + 1
     d = similar(ws.m)
     M = similar(ws.m)
-    S = similar(ws.s)
     @. d = x - ws.m
     @. M = ws.m + d / n
-    @. S = ws.s + d * (x - M)
-    return WelfordStates(M, S, n)
+    S = updateCov(ws.s, d, x .- M)
+    return WelfordState(M, S, n)
 end
 
-function accmoments(ws::WelfordStates{Vector{Float64}, Matrix{Float64}},
-                    x::Vector{Float64})::WelfordStates
-    n = ws.n + 1
-    d = similar(ws.m)
-    M = similar(ws.m)
-    S = similar(ws.s)
-    @. d = x - ws.m
-    @. M = ws.m + d / n
-    S = ws.s .+ (x .- M) * d'
-    return WelfordStates(M, S, n)
+function updateCov(s::Vector{Float64}, d::Vector{Float64}, dp::Vector{Float64})
+    return @. s + d * dp
 end
 
+function updateCov(s::AbstractArray{Float64}, d::Vector{Float64}, dp::Vector{Float64})
+    return s .+ dp * d'
+end
 
-function samplevariance(ws::WelfordStates{Vector{Float64}, Vector{Float64}},
-                        control)::Vector{Float64}
+function samplevariance(ws::AbstractWelfordState{Vector{Float64}, Vector{Float64}},
+                        control)
     if ws.n > 1
         σ = similar(ws.s)
         @. σ = ws.s / (ws.n - 1)
@@ -591,14 +595,17 @@ function samplevariance(ws::WelfordStates{Vector{Float64}, Vector{Float64}},
     return ones(length(ws.m))
 end
 
-function samplevariance(ws::WelfordStates{Vector{Float64}, Matrix{Float64}},
-                        control)::Matrix{Float64}
+function samplevariance(ws::AbstractWelfordState{Vector{Float64}, Matrix{Float64}},
+                        control)
     if ws.n > 1
         σ = similar(ws.s)
         @. σ = ws.s / (ws.n - 1)
         if control[:regularize]
             w = ws.n / (ws.n + 5.0)
             σ = w * σ + 1e-3 * (1 - w) * one(σ)
+        end
+        if control[:skewsymmetric]
+            return cholesky(Symmetric(σ)).L
         end
         return σ
     end
