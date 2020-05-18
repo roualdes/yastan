@@ -133,11 +133,7 @@ function hmc(U, ndim;
 
         # Momentum and sharp momentum at forward end of forward subtree
         pff = z.p
-        if control[:skewsymmetric]
-            psharpff = z.p # dtau_dp
-        else
-            psharpff = rhosharp(z.p, M) # dtau_dp
-        end
+        psharpff = control[:skewsymmetric] ? z.p : rhosharp(z.p, M) # dtau_dp
 
         # Momentum and sharp momentum at backward end of forward subtree
         pfb = z.p
@@ -298,11 +294,7 @@ function buildtree(depth::Int, z::PSPoint,
         logsumweight = logsumexp(logsumweight, Δ)
         α += Δ > 0.0 ? 1.0 : exp(Δ)
 
-        if control[:skewsymmetric]
-            psharpbeg = z.p # dtau_dp
-        else
-            psharpbeg = rhosharp(z.p, M) # dtau_dp
-        end
+        psharpbeg = control[:skewsymmetric] ? z.p : rhosharp(z.p, M) # dtau_dp
         psharpend = psharpbeg
 
         rho += zpr.p
