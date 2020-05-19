@@ -9,6 +9,7 @@ using Random
 using RandomNumbers.PCG
 using DelimitedFiles
 using BenchmarkTools
+using Zygote
 
 # using Distributed; addprocs(3);
 # @everywhere include("hmc.jl")
@@ -20,23 +21,73 @@ includet("models.jl")
 
 
 function funnel_(q, d)
-    Ny = normal_(d[:y], θ[:m], exp(-3 * θ[:s]))
-    Nm = normal_(θ[:m], 0, 1)
-    Ns = normal_(θ[:s], 0, 1)
+    Ny = normal_(d[:y], q[:m], exp(-3 * q[:s]))
+    Nm = normal_(q[:m], 0, 1)
+    Ns = normal_(q[:s], 0, 1)
     return Ny + Nm + Ns
 end
+f(q) = funnel_(q, d)
+
+U = q -> first(gradient(f, q))
+
+U(q)
+
+
+
+function model_(q, d)
+    return normal_(d[:y], q[:m], q[:s])
+end
+
+g(q) = model_(q, d)
 
 d = Dict(:y => 0.5)
 
-f(q) = funnel_(q, )
+gg = q -> first(gradient(g, q))
+
+gg(q)
+
 
 U = Uniform(-2, 2)
+q = Dict(:m => rand(U), :s => rand(U))
+p = Dict(:m => rand(U), :s => rand(U, (2, 2)))
 
-for (k, v) in d
-    println(rand(U, size(v)))
+f(q)
+
+
+function vecd(d::Dict)
+    l = zeros(Int, length(d))
+    for (i, v) in enumerate(values(d))
+        l[i] = length(v)
+    end
+
+    v = zeros(sum(l))
+    idx = 1
+    for (i, val) in enumerate(values(d))
+        jdx = idx + l[i] - 1
+        if idx == jdx
+            v[idx:jdx] .= val
+        else
+            v[idx:jdx] = val
+        end
+        idx += l[i]
+    end
+    return v
 end
 
-
+function dictv!(q::Vector{Float64}, d::Dict)
+    idx = 1
+    for (k, v) in d
+        l = length(v)
+        jdx = idx + l - 1
+        if idx == jdx
+            d[k] = q[idx:jdx][1]
+        else
+            d[k] = q[idx:jdx]
+        end
+        idx += l
+    end
+    return d
+end
 
 
 # single chain
