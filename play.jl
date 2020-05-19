@@ -53,7 +53,6 @@ p = Dict(:m => rand(U), :s => rand(U, (2, 2)))
 
 f(q)
 
-
 function vecd(d::Dict)
     l = zeros(Int, length(d))
     for (i, v) in enumerate(values(d))
@@ -67,7 +66,7 @@ function vecd(d::Dict)
         if idx == jdx
             v[idx:jdx] .= val
         else
-            v[idx:jdx] = val
+            v[idx:jdx] = vec(val)
         end
         idx += l[i]
     end
@@ -82,12 +81,14 @@ function dictv!(q::Vector{Float64}, d::Dict)
         if idx == jdx
             d[k] = q[idx:jdx][1]
         else
-            d[k] = q[idx:jdx]
+            d[k] = reshape(q[idx:jdx], size(v))
         end
         idx += l
     end
     return d
 end
+
+
 
 
 # single chain
