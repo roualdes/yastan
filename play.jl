@@ -37,21 +37,71 @@ U(q)
 function model_(q, d)
     return normal_(d[:y], q[:m], q[:s])
 end
-
 g(q) = model_(q, d)
 
 d = Dict(:y => 0.5)
 
 gg = q -> first(gradient(g, q))
-
 gg(q)
 
 
 U = Uniform(-2, 2)
-q = Dict(:m => rand(U), :s => rand(U))
-p = Dict(:m => rand(U), :s => rand(U, (2, 2)))
+q = Dict(:m => rand(U), :s => rand(U, (2, 2)), :b => rand(U, 1))
 
-f(q)
+function prepareq!(q::Dict)
+    q[:vec] = Dict()
+    l = zeros(Int, length(q))
+    idx = 1
+    ndims = 0
+    for (i, (k, v)) in enumerate(q)
+        if k == :vec
+            continue
+        end
+        l[i] = length(v)
+        jdx = idx + l[i] - 1
+        if idx == jdx
+            q[:vec][k] = idx
+        else
+            q[:vec][k] = idx:jdx
+        end
+        ndims += length(q[:vec][k])
+        idx += l[i]
+    end
+    q[:ndims] = ndims
+    return
+end
+
+v = [1.0; 2.0; 3.0; 4.0; 0.5; 0.6]
+
+function updateq!(q::Dict, v::Vector{Float64}; addself = false)
+    @assert length(v) == q[:ndims] "Can't assign q into vector v, differing lengths"
+    for k in keys(q[:vec])
+        idx = q[:vec][k]
+        l = length(idx)
+        if l > 1
+            tmpv = reshape(v[idx], size(q[k]))
+            q[k] .= addself ? q[k] + tmpv : tmpv
+        else
+            q[k] = addself ? q[k] + v[idx] : v[idx]
+        end
+    end
+    return
+end
+
+
+function assignq!(v::Vector{Float64}, q::Dict)
+    @assert length(v) == q[:ndims] "Can't assign q into vector v, differing lengths"
+    for k in keys(q[:vec])
+        idx = q[:vec][k]
+        if length(idx) > 1
+            v[idx] .= vec(q[k])
+        else
+            v[idx] = q[k]
+        end
+    end
+    return
+end
+
 
 function vecd(d::Dict)
     l = zeros(Int, length(d))
@@ -66,14 +116,17 @@ function vecd(d::Dict)
         if idx == jdx
             v[idx:jdx] .= val
         else
-            v[idx:jdx] = vec(val)
+            v[idx:jdx] .= vec(val)
         end
         idx += l[i]
     end
     return v
 end
 
+
+
 function dictv!(q::Vector{Float64}, d::Dict)
+    # TODO a view on q? would minimize copying
     idx = 1
     for (k, v) in d
         l = length(v)

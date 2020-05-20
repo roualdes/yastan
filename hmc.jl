@@ -97,10 +97,13 @@ function hmc(U, ndim;
     advance!(control[:rng], convert(UInt64, 1 << 50 * control[:chainid]))
 
     ∇U = q -> first(Zygote.gradient(U, q))
-    q = initializesample(ndim, U, ∇U, control)
+    # TODO do I pass initialization to user? How would I otherwise record parameter sizes?
+    # An option to re-initialize checking finite-ness of U and ∇U would allow them to over-ride
+    # re-initialization. Would need to update generateuniform to work with q::Dict.
+    q = initializesample(ndim, U, ∇U, control) # TODO updateq!(q, initializesample(...))
 
     samples = zeros(I, ndim)
-    samples[1, :] = q
+    samples[1, :] = q           # TODO saveq!(samples[1,:], q)
     zsample = PSPoint(q, generatemomentum(control[:rng], ndim, M))
 
     ε = findepsilon(1.0, zsample, U, ∇U, M, control)
@@ -122,6 +125,7 @@ function hmc(U, ndim;
     stepsizecounter = 0
 
     for i = 2:I
+        # TODO separate q::Dict and p::Vector
         z = PSPoint(samples[i - 1, :], generatemomentum(control[:rng], ndim, M))
         H0 = hamiltonian(U, z, M)
         H = H0
@@ -169,6 +173,7 @@ function hmc(U, ndim;
                 zf, zpr, validsubtree,
                 psharpfb, psharpff, rhof, pfb, pff,
                 nleapfrog, lswsubtree, α  =
+                    # TODO separate q::Dict and p::Vector
                     buildtree(depth, zf,
                               psharpfb, psharpff, rhof, pfb, pff,
                               H0, 1 * ε, U, ∇U, M,
@@ -181,6 +186,7 @@ function hmc(U, ndim;
                 zb, zpr, validsubtree,
                 psharpbf, psharpbb, rhob, pbf, pbb,
                 nleapfrog, lswsubtree, α =
+                    # TODO separate q::Dict and p::Vector
                     buildtree(depth, zb,
                               psharpbf, psharpbb, rhob, pbf, pbb,
                               H0, -1 * ε, U, ∇U, M,
@@ -194,9 +200,11 @@ function hmc(U, ndim;
             depth += 1
 
             if lswsubtree > lsw
+                # TODO separate q::Dict and p::Vector
                 zsample = zpr
             else
                 if rand(control[:rng]) < exp(lswsubtree - lsw)
+                    # TODO separate q::Dict and p::Vector
                     zsample = zpr
                 end
             end
@@ -219,7 +227,7 @@ function hmc(U, ndim;
             end
         end # end while
 
-        samples[i, :] = zsample.q
+        samples[i, :] = zsample.q # TODO use assignq!(samples[i,:], q::Dict)
         energies[i] = hamiltonian(U, zsample, M)
         treedepths[i] = depth
         leaps[i] = nleapfrog
@@ -240,6 +248,7 @@ function hmc(U, ndim;
                 W = WelfordState(zeros(ndim), zero(M), 0)
 
                 # reset stepsize
+                # TODO separate q::Dict and p::Vector
                 ε = findepsilon(ε, zsample, U, ∇U, M, control)
                 μ = log(10 * ε)
                 sbar = 0.0
@@ -271,6 +280,7 @@ function hmc(U, ndim;
 end
 
 
+# TODO separate q::Dict and p::Vector
 function buildtree(depth::Int, z::PSPoint,
                     psharpbeg, psharpend, rho, pbeg, pend,
                     H0::Float64, ε::Float64, U, ∇U, M::AbstractArray{Float64},
