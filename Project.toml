@@ -1,0 +1,13 @@
+name = "yastan"
+uuid = "70fef0f2-f5de-4b9d-9880-dfca5c6bca6a"
+authors = ["Edward A. Roualdes <eroualdes@csuchico.edu>", "Chico State"]
+version = "0.1.0"
+
+[compat]
+julia = "1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
