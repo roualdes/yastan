@@ -1,4 +1,4 @@
-module yastan
+module YaStan
 
 using LinearAlgebra
 using Distributions

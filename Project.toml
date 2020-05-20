@@ -1,4 +1,4 @@
-name = "yastan"
+name = "YaStan"
 uuid = "70fef0f2-f5de-4b9d-9880-dfca5c6bca6a"
 authors = ["Edward A. Roualdes <eroualdes@csuchico.edu>", "Chico State"]
 version = "0.1.0"

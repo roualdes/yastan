@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 
-using yastan
+using YaStan
 using Test
 using SafeTestsets
 
