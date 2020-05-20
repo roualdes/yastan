@@ -1,6 +1,11 @@
+#!/usr/bin/env julia
+
 using yastan
 using Test
+using SafeTestsets
 
-@testset "yastan.jl" begin
-    # Write your own tests here.
-end
+@safetestset "Welford Accumulator" begin include("welford.jl") end
+
+# @testset "yastan.jl" begin
+#     # Write your own tests here.
+# end
