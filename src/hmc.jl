@@ -37,6 +37,7 @@ function checkcontrol(c::Dict)
     return c
 end
 
+# TODO drop ndim and add M as an option via metric \in {diag, dense, skewsymmetric}
 function stan(U, ndim;
               M::AbstractArray{Float64} = ones(ndim), control::Dict = Dict())
 
@@ -374,9 +375,10 @@ function buildtree(depth::Int, z::PSPoint,
     nleapfrog, logsumweight, α
 end
 
+# TODO update leapfrog.  Based on comment within, this will make leapfrog mutating, leapfrog!
 function leapfrog(z::PSPoint, ∇U, ε::Float64, M::Array{Float64})::PSPoint
     p_ = z.p - 0.5 * ε * ∇U(z.q)
-    q = z.q + ε * rhosharp(p_, M)
+    q = z.q + ε * rhosharp(p_, M) # updateq!(q, ε * rhosharp(p_, M); addself = true)
     p = p_ - 0.5 * ε * ∇U(q)
     return PSPoint(q, p)
 end

@@ -13,5 +13,6 @@ using FFTW
 include("hmc.jl")
 include("convergence.jl")
 include("models.jl")
+include("utilities.jl")
 
 end # module

@@ -46,12 +46,18 @@ gg(q)
 
 
 U = Uniform(-2, 2)
-q = Dict(:m => rand(U), :s => rand(U, (2, 2)), :b => rand(U, 1))
+q = Dict(:m => 1.0, :s => [3.0 5.0; 4.0 6.0], :b => [2.0])
+u = Dict(:m => 1.0, :s => [3.0 5.0; 4.0 6.0], :b => [2.0])
+prepareq!(q)
+
+x = zeros(6)
+assignq!(x, q)
 
 
-
-v = [1.0; 2.0; 3.0; 4.0; 0.5; 0.6]
-
+function uq(q, x)
+    updateq!(q, x)
+    return
+end
 
 
 

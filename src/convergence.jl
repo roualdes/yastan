@@ -131,10 +131,6 @@ function rhat_impl(x)
     return sqrt((var_between / var_within + niterations - 1) / niterations)
 end
 
-function rhat(x)
-    rhatbulk = rhat_impl()
-end
-
 
 function isconstant(x, tol=sqrt(eps(0.0)))
     return isapprox(minimum(x), maximum(x), rtol=tol)
