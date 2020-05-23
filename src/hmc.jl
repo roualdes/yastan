@@ -78,28 +78,25 @@ function stan(U, ndim;
                          :control => control)
 end
 
-function hmc(U, ndim;
-             M::AbstractArray{Float64} = ones(ndim), control::Dict = Dict())
+function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict = Dict())
 
+    ndim = q[:length]
     control = checkcontrol(control)
-    I = control[:iterations] + control[:iterations_warmup]
+    # checkinitialization(q) # TODO assert finite, U and ∇U, check if !haskey(q[:vec]) prepareq!(q)
 
     # advance RandomNumbers RNG
     # TODO (ear) figure out their type structure
     # and document this requirement.
     advance!(control[:rng], convert(UInt64, 1 << 50 * control[:chainid]))
-
     ∇U = q -> first(Zygote.gradient(U, q))
-    # TODO do I pass initialization to user? How would I otherwise record parameter sizes?
-    # An option to re-initialize checking finite-ness of U and ∇U would allow them to over-ride
-    # re-initialization. Would need to update generateuniform to work with q::Dict.
-    q = initializesample(ndim, U, ∇U, control) # TODO updateq!(q, initializesample(...))
+    I = control[:iterations] + control[:iterations_warmup]
+    # q = initializesample(ndim, U, ∇U, control) # TODO goto checkinitialization
 
     samples = zeros(I, ndim)
-    samples[1, :] = q           # TODO saveq!(samples[1,:], q)
-    zsample = PSPoint(q, generatemomentum(control[:rng], ndim, M))
+    assignq!(samples[1,:], q)
+    psample = generatemomentum(control[:rng], ndim, M)
 
-    ε = findepsilon(1.0, zsample, U, ∇U, M, control)
+    ε = findepsilon(1.0, q, psample, U, ∇U, M, control)
     μ = control[:μ]
     εbar = 0.0
     sbar = 0.0
@@ -119,33 +116,34 @@ function hmc(U, ndim;
 
     for i = 2:I
         # TODO separate q::Dict and p::Vector
-        z = PSPoint(samples[i - 1, :], generatemomentum(control[:rng], ndim, M))
-        H0 = hamiltonian(U, z, M)
+        updateq!(q, samples[i - 1, :])
+        p = generatemomentum(control[:rng], ndim, M)
+        H0 = hamiltonian(q, p, U, M)
         H = H0
 
-        zf = z
-        zb = z
-        zsample = z
-        zpr = z
+        qf, pf = deepcopy(q), copy(p)
+        qb, pb = deepcopy(q), copy(p)
+        qsample, psample = deepcopy(q), copy(p)
+        qpr, ppr = deepcopy(q), copy(p)
 
         # Momentum and sharp momentum at forward end of forward subtree
-        pff = z.p
-        psharpff = control[:skewsymmetric] ? z.p : rhosharp(z.p, M) # dtau_dp
+        pff = p
+        psharpff = control[:skewsymmetric] ? p : rhosharp(p, M) # dtau_dp
 
         # Momentum and sharp momentum at backward end of forward subtree
-        pfb = z.p
+        pfb = p
         psharpfb = psharpff
 
         # Momentum and sharp momentum at forward end of backward subtree
-        pbf = z.p
+        pbf = p
         psharpbf = psharpff
 
         # Momentum and sharp momentum at backward end of backward subtree
-        pbb = z.p
+        pbb = p
         psharpbb = psharpff
 
         # Integrated momenta along trajectory
-        rho = z.p
+        rho = p
 
         α = 0.0
         depth = 0
@@ -163,27 +161,17 @@ function hmc(U, ndim;
                 pbf = pff
                 psharpbf = psharpff
 
-                zf, zpr, validsubtree,
-                psharpfb, psharpff, rhof, pfb, pff,
-                nleapfrog, lswsubtree, α  =
-                    # TODO separate q::Dict and p::Vector
-                    buildtree(depth, zf,
-                              psharpfb, psharpff, rhof, pfb, pff,
-                              H0, 1 * ε, U, ∇U, M,
-                              nleapfrog, lswsubtree, α, control)
+                qpr, ppr, validsubtree, nleapfrog, lswsubtree, α =
+                    buildtree!(depth, qf, pf, psharpfb, psharpff, rhof, pfb, pff,
+                               H0, 1 * ε, U, ∇U, M, nleapfrog, lswsubtree, α, control)
             else
                 rhof = rho
                 pfb = pbb
                 psharpfb = psharpbb
 
-                zb, zpr, validsubtree,
-                psharpbf, psharpbb, rhob, pbf, pbb,
-                nleapfrog, lswsubtree, α =
-                    # TODO separate q::Dict and p::Vector
-                    buildtree(depth, zb,
-                              psharpbf, psharpbb, rhob, pbf, pbb,
-                              H0, -1 * ε, U, ∇U, M,
-                              nleapfrog, lswsubtree, α, control)
+                qpr, ppr, validsubtree, nleapfrog, lswsubtree, α =
+                    buildtree!(depth, qb, pb, psharpbf, psharpbb, rhob, pbf, pbb,
+                              H0, -1 * ε, U, ∇U, M, nleapfrog, lswsubtree, α, control)
             end
 
             if !validsubtree
@@ -193,19 +181,17 @@ function hmc(U, ndim;
             depth += 1
 
             if lswsubtree > lsw
-                # TODO separate q::Dict and p::Vector
-                zsample = zpr
+                qsample, psample = deepcopy(qpr), copy(ppr)
             else
                 if rand(control[:rng]) < exp(lswsubtree - lsw)
-                    # TODO separate q::Dict and p::Vector
-                    zsample = zpr
+                    qsample, psample = deepcopy(qpr), copy(ppr)
                 end
             end
 
             lsw = logsumexp(lsw, lswsubtree)
 
             # Demand satisfication around merged subtrees
-            rho = rhob + rhof
+            rho .= rhob + rhof
             persist = stancriterion(psharpbb, psharpff, rho)
 
             # Demand satisfaction between subtrees
@@ -220,8 +206,11 @@ function hmc(U, ndim;
             end
         end # end while
 
-        samples[i, :] = zsample.q # TODO use assignq!(samples[i,:], q::Dict)
-        energies[i] = hamiltonian(U, zsample, M)
+        if i < 20
+            println(qsample)
+        end
+        assignq!(samples, qsample, i)
+        energies[i] = hamiltonian(qsample, psample, U, M)
         treedepths[i] = depth
         leaps[i] = nleapfrog
         εs[i] = ε
@@ -242,7 +231,7 @@ function hmc(U, ndim;
 
                 # reset stepsize
                 # TODO separate q::Dict and p::Vector
-                ε = findepsilon(ε, zsample, U, ∇U, M, control)
+                ε = findepsilon(ε, qsample, psample, U, ∇U, M, control)
                 μ = log(10 * ε)
                 sbar = 0.0
                 xbar = 0.0
@@ -274,16 +263,17 @@ end
 
 
 # TODO separate q::Dict and p::Vector
-function buildtree(depth::Int, z::PSPoint,
-                    psharpbeg, psharpend, rho, pbeg, pend,
+function buildtree!(depth::Int, q::Dict, p::Vector{Float64},
+                    psharpbeg::Vector{Float64}, psharpend::Vector{Float64},
+                    rho::Vector{Float64}, pbeg::Vector{Float64}, pend::Vector{Float64},
                     H0::Float64, ε::Float64, U, ∇U, M::AbstractArray{Float64},
                     nleapfrog::Int, logsumweight::Float64, α::Float64, control)
     if depth == 0
-        zpr = leapfrog(z, ∇U, ε, M)
-        z = zpr
+        leapfrog!(q, p, ∇U, ε, M)
+        qpr, ppr = deepcopy(q), copy(p)
         nleapfrog += 1
 
-        H = hamiltonian(U, zpr, M)
+        H = hamiltonian(qpr, ppr, U, M)
         if isnan(H)
             H = Inf
         end
@@ -297,68 +287,60 @@ function buildtree(depth::Int, z::PSPoint,
         logsumweight = logsumexp(logsumweight, Δ)
         α += Δ > 0.0 ? 1.0 : exp(Δ)
 
-        psharpbeg = control[:skewsymmetric] ? z.p : rhosharp(z.p, M) # dtau_dp
-        psharpend = psharpbeg
+        psharpbeg .= control[:skewsymmetric] ? p : rhosharp(p, M) # dtau_dp
+        psharpend .= psharpbeg
 
-        rho += zpr.p
-        pbeg = zpr.p
-        pend = pbeg
+        rho .= rho + ppr
+        pbeg .= ppr
+        pend .= pbeg
 
-        return z, zpr, !divergent, psharpbeg, psharpend, rho, pbeg, pend, nleapfrog, logsumweight, α
+        return qpr, ppr, !divergent, nleapfrog, logsumweight, α
     end
 
     lswinit = -Inf
 
-    psharpinitend = similar(z.p)
+    psharpinitend = similar(p)
     rhoinit = zeros(length(rho))
-    pinitend = similar(z.p)
+    pinitend = similar(p)
 
-    z, zpr, validinit,
-    psharpbeg, psharpinitend, rhoinit, pbeg, pinitend,
-    nleapfrog, lswinit, α =
-        buildtree(depth - 1, z,
-                   psharpbeg, psharpinitend, rhoinit, pbeg, pinitend,
-                   H0, ε, U, ∇U, M, nleapfrog, lswinit, α, control)
+    qpr, ppr, validinit, nleapfrog, lswinit, α =
+        buildtree!(depth - 1, q, p,
+                  psharpbeg, psharpinitend, rhoinit, pbeg, pinitend,
+                  H0, ε, U, ∇U, M, nleapfrog, lswinit, α, control)
 
     if !validinit
-        return zpr, zpr, false,
-        psharpbeg, psharpend, rho, pbeg, pend,
-        nleapfrog, logsumweight, α
+        return qpr, ppr, false, nleapfrog, logsumweight, α
     end
 
     lswfinal = -Inf
 
-    psharpfinalbeg = similar(z.p)
+    psharpfinalbeg = similar(p)
     rhofinal = zeros(length(rho))
-    pfinalbeg = similar(z.p)
+    pfinalbeg = similar(p)
 
-    z, zfinalpr, validfinal,
-    psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
-    nleapfrog, lswfinal, α =
-        buildtree(depth - 1, z,
+    qfinalpr, pfinalpr, validfinal, nleapfrog, lswfinal, α =
+        buildtree!(depth - 1, qpr, ppr,
                    psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
                    H0, ε, U, ∇U, M, nleapfrog, lswfinal, α, control)
 
     if !validfinal
-        return zfinalpr, zfinalpr, false,
-        psharpbeg, psharpend, rho, pbeg, pend,
-        nleapfrog, logsumweight, α
+        return qfinalpr, pfinalpr, false, nleapfrog, logsumweight, α
     end
 
     lswsubtree = logsumexp(lswinit, lswfinal)
 
     if lswfinal > lswsubtree
-        zpr = zfinalpr
+        qpr, ppr = deepcopy(qfinalpr), copy(pfinalpr)
     else
         if rand(control[:rng]) < exp(lswfinal - lswsubtree)
-            zpr = zfinalpr
+            qpr, ppr = deepcopy(qfinalpr), copy(pfinalpr)
         end
     end
 
     logsumweight = logsumexp(logsumweight, lswsubtree)
 
     rhosubtree = rhoinit + rhofinal
-    rho += rhosubtree
+    rho .= rho + rhosubtree
 
     # Demand satisfaction around merged subtrees
     persist = stancriterion(psharpbeg, psharpend, rhosubtree)
@@ -370,33 +352,32 @@ function buildtree(depth::Int, z::PSPoint,
     rhosubtree = rhofinal + pinitend
     persist &= stancriterion(psharpinitend, psharpend, rhosubtree)
 
-    return z, zpr, persist,
-    psharpbeg, psharpend, rho, pbeg, pend,
-    nleapfrog, logsumweight, α
+    return qpr, ppr, persist, nleapfrog, logsumweight, α
 end
 
-# TODO update leapfrog.  Based on comment within, this will make leapfrog mutating, leapfrog!
-function leapfrog(z::PSPoint, ∇U, ε::Float64, M::Array{Float64})::PSPoint
-    p_ = z.p - 0.5 * ε * ∇U(z.q)
-    q = z.q + ε * rhosharp(p_, M) # updateq!(q, ε * rhosharp(p_, M); addself = true)
-    p = p_ - 0.5 * ε * ∇U(q)
-    return PSPoint(q, p)
+function leapfrog!(q::Dict, p::Vector{Float64}, ∇U, ε::Float64, M::Array{Float64})
+    updatep!(∇U, q, p, 0.5 * ε)
+    updateq!(q, ε * rhosharp(p, M); addself = true)
+    updatep!(∇U, q, p, 0.5 * ε)
+    return
 end
 
-function leapfrog(z::PSPoint, ∇U, ε::Float64,
-                  L::LowerTriangular{Float64,Matrix{Float64}})::PSPoint
-    p_ = z.p - 0.5 * ε * (L' * ∇U(z.q))
-    q = z.q + ε * rhosharp(p_, L)
-    p = p_ - 0.5 * ε * (L' * ∇U(q))
-    return PSPoint(q, p)
+# TODO want this bad enough to mess with L' * ∇U(q)::Dict?
+# function leapfrog!(q::Dict, p::Vector{Float64}, ∇U, ε::Float64,
+#                    L::LowerTriangular{Float64,Matrix{Float64}})
+#     p_ = p - 0.5 * ε * (L' * ∇U(q))
+#     updateq!(q, ε * rhosharp(p_, L); addself = true)
+#     p .= p_ - 0.5 * ε * (L' * ∇U(q))
+#     return
+# end
+
+function hamiltonian(q::Dict, p::Vector{Float64}, U, M::Array{Float64})::Float64
+    return U(q) + 0.5 * (p' * rhosharp(p, M))
 end
 
-function hamiltonian(U, z::PSPoint, M::Array{Float64})::Float64
-    return U(z.q) + 0.5 * (z.p' * rhosharp(z.p, M))
-end
-
-function hamiltonian(U, z::PSPoint, L::LowerTriangular{Float64,Matrix{Float64}})::Float64
-    return U(z.q) + 0.5 * (z.p' * z.p)
+function hamiltonian(q::Dict, p::Vector{Float64},
+                     L::LowerTriangular{Float64,Matrix{Float64}})::Float64
+    return U(q) + 0.5 * (p' * p)
 end
 
 function rhosharp(p::Vector{Float64}, M::Vector{Float64})::Vector{Float64}
@@ -407,7 +388,8 @@ function rhosharp(p::Vector{Float64}, M::Matrix{Float64})::Vector{Float64}
     return M * p
 end
 
-function rhosharp(p::Vector{Float64}, L::LowerTriangular{Float64,Matrix{Float64}})::Vector{Float64}
+function rhosharp(p::Vector{Float64},
+                  L::LowerTriangular{Float64,Matrix{Float64}})::Vector{Float64}
     return L * p
 end
 
@@ -430,25 +412,29 @@ function generatemomentum(rng, ndim::Int,
 end
 
 
-function findepsilon(ε::Float64, z::PSPoint, U, ∇U,
+function findepsilon(ε::Float64, q::Dict, p::Vector{Float64}, U, ∇U,
                      M::AbstractArray{Float64}, control)::Float64
-    ndim = length(z.q)
-    H0 = hamiltonian(U, z, M)
+    ndim = q[:length]
+    H0 = hamiltonian(q, p, U, M)
 
-    zp = leapfrog(z, ∇U, ε, M)
-    H = hamiltonian(U, zp, M)
-    isnan(H) && (H = Inf)
+    leapfrog!(q, p, ∇U, ε, M)
+    H = hamiltonian(q, p, U, M)
+    if isnan(H)
+        H = Inf
+    end
 
     ΔH = H0 - H
     direction = ΔH > log(0.8) ? 1 : -1
 
     while true
-        rp = generatemomentum(control[:rng], ndim, M)
-        H0 = hamiltonian(U, z, M)
+        p = generatemomentum(control[:rng], ndim, M)
+        H0 = hamiltonian(q, p, U, M)
 
-        zp = leapfrog(z, ∇U, ε, M)
-        H = hamiltonian(U, zp, M)
-        isnan(H) && (H = Inf)
+        leapfrog!(q, p, ∇U, ε, M)
+        H = hamiltonian(q, p, U, M)
+        if isnan(H)
+            H = Inf
+        end
 
         ΔH = H0 - H
         if direction == 1 && !(ΔH > log(0.8))

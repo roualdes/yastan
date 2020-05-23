@@ -2,6 +2,14 @@
 using LinearAlgebra
 
 
+function funnel_(q, d)
+    Ny = normal_(d[:y], q[:m], exp(-1.5 * q[:s]))
+    Nm = normal_(q[:m], 0, 1)
+    Ns = normal_(q[:s], 0, 1)
+    return Ny + Nm + Ns
+end
+
+
 function normal_(x::Vector{Float64}, μ::Vector{Float64}, Σ::Matrix{Float64})
     # TODO allow Σ a parameter
     d = x - μ

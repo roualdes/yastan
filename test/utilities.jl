@@ -4,9 +4,9 @@ using Test
 q = Dict(:m => 0.1, :s => [0.3 0.5; 0.4 0.6], :b => [0.2])
 u = Dict(:m => 0.1, :s => [0.3 0.5; 0.4 0.6], :b => [0.2])
 
-YaStan.prepareq!(q)
+q = YaStan.prepareq(q)
 
-@test q[:ndims] == 6
+@test q[:length] == 6
 @test haskey(q, :vec) == true
 @test q[:vec][:m][1] == 1
 @test q[:vec][:b][1] == 2
