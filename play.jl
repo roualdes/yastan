@@ -10,6 +10,7 @@ using RandomNumbers.PCG
 using DelimitedFiles
 using BenchmarkTools
 using Zygote
+using SharedArrays
 
 using Distributed; addprocs(3);
 # @everywhere include("hmc.jl")
@@ -20,42 +21,40 @@ includet("src/models.jl")
 includet("src/utilities.jl")
 
 
-q = Dict(:xraw => 0.5)
+q = Dict(:xraw => 0.5 * ones(5))
 q = prepareq(q)
-d = Dict(:mu => 0.0, :sigma => 1.0)
+d = convert(Dict{Any,Any}, Dict(:mu => 14.5, :sigma => 3.14))
 
 function model_(q, d)
-    d[:x] = d[:mu] + q[:xraw] * d[:sigma] # transformed parameter
-    return normal_(q[:xraw], 0.0, 1.0)
+    # TODO figure out how to store this
+    d[:x] = d[:mu] .+ q[:xraw] * d[:sigma] # transformed parameter
+    return sum(normal_.(q[:xraw], 0.0, 1.0))
 end
 
 g(q) = model_(q, d)
+
+q = Dict(:x => randn(64))
+q = prepareq(q)
+g(q) = normal_(q[:x], zeros(64), Matrix(Diagonal(ones(64))))
+
 gg = q -> first(gradient(g, q))
+
+g(q)
 
 gg(q)
 
 
 # single chain
-samples, diagnostics = hmc(g, q;
-                 # M = cholesky(Symmetric(Minv)).L,
-                 # M = Minv,
-                 control = Dict(:skewsymmetric => false, :iterations => 2000));
-
-samples2, d2 = hmc(f, ndim;
-                 # M = cholesky(Symmetric(Minv)).L,
-                 M = Minv,
-                 control = Dict(:skewsymmetric => false, :iterations => 2000));
-
+samples, diagnostics = hmc(g, q; control = Dict(:iterations => 100_000));
 
 
 # multiple chains
-p# @benchmark
-samples, d = stan(f, ndim;
-                  M = Minv, control = Dict(:skewsymmetric => false, :iterations => 2000));
+# @benchmark
+samples, diagnostics = stan(g, q);
 
 
-round.(mean(samples[:, :, :], dims=1), digits=1)
-round.(std(samples[:, :, :], dims=1), digits=1)
+round.(mean(samples[:, 1:5] * d[:sigma] .+ d[:mu], dims=1), digits=2)
+round.(std(samples[:, 1:5] * d[:sigma] .+ d[:mu], dims=1), digits=2)
 
 round.(mean(samples2[:, :, :], dims=1), digits=1)
 round.(std(samples2[:, :, :], dims=1), digits=1)

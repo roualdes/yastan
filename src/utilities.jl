@@ -31,14 +31,14 @@ function assignq!(v::Vector{Float64}, q::Dict)
     return
 end
 
-function assignq!(v::Array{Float64}, q::Dict, row::Int = 1)
+function assignq!(a::Array{Float64}, row::Int, q::Dict)
     for k in keys(q[:vec])
         if k != :vec || k != :length
             idx = q[:vec][k]
             if typeof(q[k]) <: AbstractArray
-                v[row, idx] .= vec(q[k])
+                a[row, idx] .= vec(q[k])
             else
-                v[row, idx] .= q[k]
+                a[row, idx] .= q[k]
             end
         end
     end
@@ -60,7 +60,8 @@ function updateq!(q::Dict, v::Vector{Float64}; addself = false)
 end
 
 # TODO add tests
-function updatep!(∇U, q, p, ε)
+# TODO should be updatep!(p, ∇U, q, ε)
+function updatep!(∇U, q::Dict, p::Vector{Float64}, ε::Float64)
     @assert length(p) == q[:length] "Can't multiply ∇U(q) by p, differening lengths."
     gq = ∇U(q)
     for k in keys(q[:vec])
@@ -72,4 +73,19 @@ function updatep!(∇U, q, p, ε)
         end
     end
     return
+end
+
+
+function setmetric(metric::String, ndim::Int)::AbstractArray{Float64}
+    @assert metric in ["diag", "dense", "skewsymmetric"] "Metric $metric not understood.  Options are diag, dense, or skewsymmetric."
+
+    if metric == "skewsymmetric"
+        M = cholesky(Symmetric(Matrix(Diagonal(ones(ndim))))).L
+    elseif metric == "dense"
+        M = Matrix(Diagonal(ones(ndim)))
+    else
+        M = ones(ndim)
+    end
+
+    return M
 end

@@ -1,8 +1,3 @@
-struct PSPoint
-    q::Vector{Float64}
-    p::Vector{Float64}
-end
-
 function maybeupdate!(c::Dict, s::Symbol, v)
     if !haskey(c, s)
         merge!(c, Dict(s => v))
@@ -18,6 +13,7 @@ function checkcontrol(c::Dict)
     maybeupdate!(c, :iterations, 2000)
     maybeupdate!(c, :iterations_warmup, c[:iterations] ÷ 2)
     maybeupdate!(c, :chains, 4)
+    maybeupdate!(c, :metric, "diag")
     maybeupdate!(c, :chainid, 1)
     maybeupdate!(c, :rng, PCGStateOneseq(UInt64, PCG_RXS_M_XS))
     maybeupdate!(c, :maxtreedepth, 10)
@@ -37,13 +33,13 @@ function checkcontrol(c::Dict)
     return c
 end
 
-# TODO drop ndim and add M as an option via metric \in {diag, dense, skewsymmetric}
-function stan(U, ndim;
-              M::AbstractArray{Float64} = ones(ndim), control::Dict = Dict())
+function stan(U, q; control::Dict = Dict())
 
     control = checkcontrol(control)
     I = control[:iterations] + control[:iterations_warmup]
     chains = control[:chains]
+    ndim = q[:length]
+    M = setmetric(control[:metric], ndim)
 
     samples = SharedArray{Float64}(control[:iterations], chains, ndim)
     leaps = SharedArray{Float64}(I, chains)
@@ -56,7 +52,7 @@ function stan(U, ndim;
 
     @sync @distributed for chain in 1:control[:chains]
         control = merge(control, Dict(:chainid => chain))
-        samples[:, chain, :], d = hmc(U, ndim; M = M, control = control)
+        samples[:, chain, :], d = hmc(U, ndim; control = control)
 
         leaps[:, chain] = d[:leapfrog]
         acceptstats[:, chain] = d[:acceptstat]
@@ -78,11 +74,14 @@ function stan(U, ndim;
                          :control => control)
 end
 
-function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict = Dict())
+function hmc(U, q; control::Dict = Dict())
 
     ndim = q[:length]
     control = checkcontrol(control)
-    # checkinitialization(q) # TODO assert finite, U and ∇U, check if !haskey(q[:vec]) prepareq!(q)
+    M = setmetric(control[:metric], ndim)
+    # TODO assert finite, U and ∇U,
+    # check if !haskey(q[:vec]) prepareq!(q) end
+    # checkinitialization(q)
 
     # advance RandomNumbers RNG
     # TODO (ear) figure out their type structure
@@ -93,10 +92,11 @@ function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict =
     # q = initializesample(ndim, U, ∇U, control) # TODO goto checkinitialization
 
     samples = zeros(I, ndim)
-    assignq!(samples[1,:], q)
+    assignq!(samples, 1, q)
     psample = generatemomentum(control[:rng], ndim, M)
 
-    ε = findepsilon(1.0, q, psample, U, ∇U, M, control)
+    ε = findepsilon(1.0, deepcopy(q), deepcopy(psample),
+                    U, ∇U, M, control)
     μ = control[:μ]
     εbar = 0.0
     sbar = 0.0
@@ -115,35 +115,43 @@ function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict =
     stepsizecounter = 0
 
     for i = 2:I
-        # TODO separate q::Dict and p::Vector
         updateq!(q, samples[i - 1, :])
         p = generatemomentum(control[:rng], ndim, M)
         H0 = hamiltonian(q, p, U, M)
         H = H0
 
-        qf, pf = deepcopy(q), copy(p)
-        qb, pb = deepcopy(q), copy(p)
-        qsample, psample = deepcopy(q), copy(p)
-        qpr, ppr = deepcopy(q), copy(p)
+        qf, pf = deepcopy(q), deepcopy(p)
+        qb, pb = deepcopy(q), deepcopy(p)
+        qsample, psample = deepcopy(q), deepcopy(p)
+        qpr, ppr = deepcopy(q), deepcopy(p)
 
         # Momentum and sharp momentum at forward end of forward subtree
-        pff = p
-        psharpff = control[:skewsymmetric] ? p : rhosharp(p, M) # dtau_dp
+        pff = similar(p)
+        pff .= p
+        psharpff = similar(p)
+        psharpff .= control[:skewsymmetric] ? p : rhosharp(p, M) # dtau_dp
 
         # Momentum and sharp momentum at backward end of forward subtree
-        pfb = p
-        psharpfb = psharpff
+        pfb = similar(p)
+        pfb .= p
+        psharpfb = similar(p)
+        psharpfb .= psharpff
 
         # Momentum and sharp momentum at forward end of backward subtree
-        pbf = p
-        psharpbf = psharpff
+        pbf = similar(p)
+        pbf .= p
+        psharpbf = similar(p)
+        psharpbf .= psharpff
 
         # Momentum and sharp momentum at backward end of backward subtree
-        pbb = p
-        psharpbb = psharpff
+        pbb = similar(p)
+        pbb .= p
+        psharpbb = similar(p)
+        psharpbb .= psharpff
 
         # Integrated momenta along trajectory
-        rho = p
+        rho = similar(p)
+        rho .= p
 
         α = 0.0
         depth = 0
@@ -157,17 +165,17 @@ function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict =
             lswsubtree = -Inf
 
             if rand(control[:rng]) > 0.5
-                rhob = rho
-                pbf = pff
-                psharpbf = psharpff
+                rhob .= rho
+                pbf .= pff
+                psharpbf .= psharpff
 
                 qpr, ppr, validsubtree, nleapfrog, lswsubtree, α =
                     buildtree!(depth, qf, pf, psharpfb, psharpff, rhof, pfb, pff,
                                H0, 1 * ε, U, ∇U, M, nleapfrog, lswsubtree, α, control)
             else
-                rhof = rho
-                pfb = pbb
-                psharpfb = psharpbb
+                rhof .= rho
+                pfb .= pbb
+                psharpfb .= psharpbb
 
                 qpr, ppr, validsubtree, nleapfrog, lswsubtree, α =
                     buildtree!(depth, qb, pb, psharpbf, psharpbb, rhob, pbf, pbb,
@@ -181,10 +189,10 @@ function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict =
             depth += 1
 
             if lswsubtree > lsw
-                qsample, psample = deepcopy(qpr), copy(ppr)
+                qsample, psample = deepcopy(qpr), deepcopy(ppr)
             else
                 if rand(control[:rng]) < exp(lswsubtree - lsw)
-                    qsample, psample = deepcopy(qpr), copy(ppr)
+                    qsample, psample = deepcopy(qpr), deepcopy(ppr)
                 end
             end
 
@@ -206,10 +214,7 @@ function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict =
             end
         end # end while
 
-        if i < 20
-            println(qsample)
-        end
-        assignq!(samples, qsample, i)
+        assignq!(samples, i, qsample)
         energies[i] = hamiltonian(qsample, psample, U, M)
         treedepths[i] = depth
         leaps[i] = nleapfrog
@@ -230,8 +235,8 @@ function hmc(U, q; M::AbstractArray{Float64} = ones(q[:length]), control::Dict =
                 W = WelfordState(zeros(ndim), zero(M), 0)
 
                 # reset stepsize
-                # TODO separate q::Dict and p::Vector
-                ε = findepsilon(ε, qsample, psample, U, ∇U, M, control)
+                ε = findepsilon(ε, deepcopy(qsample), deepcopy(psample),
+                                U, ∇U, M, control)
                 μ = log(10 * ε)
                 sbar = 0.0
                 xbar = 0.0
@@ -270,7 +275,7 @@ function buildtree!(depth::Int, q::Dict, p::Vector{Float64},
                     nleapfrog::Int, logsumweight::Float64, α::Float64, control)
     if depth == 0
         leapfrog!(q, p, ∇U, ε, M)
-        qpr, ppr = deepcopy(q), copy(p)
+        qpr, ppr = deepcopy(q), deepcopy(p)
         nleapfrog += 1
 
         H = hamiltonian(qpr, ppr, U, M)
@@ -319,7 +324,7 @@ function buildtree!(depth::Int, q::Dict, p::Vector{Float64},
     pfinalbeg = similar(p)
 
     qfinalpr, pfinalpr, validfinal, nleapfrog, lswfinal, α =
-        buildtree!(depth - 1, qpr, ppr,
+        buildtree!(depth - 1, q, p,
                    psharpfinalbeg, psharpend, rhofinal, pfinalbeg, pend,
                    H0, ε, U, ∇U, M, nleapfrog, lswfinal, α, control)
 
@@ -330,10 +335,10 @@ function buildtree!(depth::Int, q::Dict, p::Vector{Float64},
     lswsubtree = logsumexp(lswinit, lswfinal)
 
     if lswfinal > lswsubtree
-        qpr, ppr = deepcopy(qfinalpr), copy(pfinalpr)
+        qpr, ppr = deepcopy(qfinalpr), deepcopy(pfinalpr)
     else
         if rand(control[:rng]) < exp(lswfinal - lswsubtree)
-            qpr, ppr = deepcopy(qfinalpr), copy(pfinalpr)
+            qpr, ppr = deepcopy(qfinalpr), deepcopy(pfinalpr)
         end
     end
 
