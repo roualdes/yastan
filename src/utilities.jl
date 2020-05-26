@@ -1,44 +1,81 @@
-function prepareq(q::Dict)
-    q = convert(Dict{Any, Any}, q)
-    q[:vec] = Dict()
-    l = zeros(Int, length(q))
+# function prepareq(q::Dict)
+#     # TODO would prefer not to make a copy of q
+#     # necessitates creation of q as Dict{Symbol, Any}(...)
+#     q = convert(Dict{Any, Any}, q)
+#     q[:vec] = Dict()
+#     l = zeros(Int, length(q))
+#     idx = 1
+#     d = 0
+#     for (i, (k, v)) in enumerate(q)
+#         if k != :vec
+#             l[i] = length(v)
+#             jdx = idx + l[i] - 1
+#             q[:vec][k] = idx:jdx
+#             d += length(q[:vec][k])
+#             idx += l[i]
+#         end
+#     end
+#     q[:length] = d
+#     return q
+# end
+
+function prepareparameters!(D::Dict, ks)
+    @assert typeof(D) <: Dict{Symbol, Any} "$D has wrong type.  Try creating $D as Dict{Symbol, Any}(...)."
+    @assert !(:vec in ks) && !(:length in ks) "Can't index keys :vec or :length."
+    D[:vec] = Dict{Symbol, Any}()
+    l = zeros(Int, length(ks))
     idx = 1
-    d = 0
-    for (i, (k, v)) in enumerate(q)
+    ndims = 0
+    for (i, k) in enumerate(ks)
         if k != :vec
-            l[i] = length(v)
+            l[i] = length(D[k])
             jdx = idx + l[i] - 1
-            q[:vec][k] = idx:jdx
-            d += length(q[:vec][k])
+            D[:vec][k] = idx:jdx
+            ndims += length(D[:vec][k])
             idx += l[i]
         end
     end
-    q[:length] = d
-    return q
+    D[:length] = ndims
+    return
 end
 
-function assignq!(v::Vector{Float64}, q::Dict)
-    for k in keys(q[:vec])
-        if k != :vec || k != :length
-            idx = q[:vec][k]
-            if typeof(q[k]) <: AbstractArray
-                v[idx] .= vec(q[k])
+
+function assignq!(v::Vector{Float64}, D::Dict)
+    for k in keys(D[:vec])
+        if k != :vec && k != :length
+            idx = D[:vec][k]
+            if typeof(D[k]) <: AbstractArray
+                v[idx] .= vec(D[k])
             else
-                v[idx] .= q[k]
+                v[idx] .= D[k]
             end
         end
     end
     return
 end
 
-function assignq!(a::Array{Float64}, row::Int, q::Dict)
-    for k in keys(q[:vec])
-        if k != :vec || k != :length
-            idx = q[:vec][k]
-            if typeof(q[k]) <: AbstractArray
-                a[row, idx] .= vec(q[k])
+# function assignq!(a::Array{Float64}, row::Int, q::Dict)
+#     for k in keys(q[:vec])
+#         if k != :vec || k != :length
+#             idx = q[:vec][k]
+#             if typeof(q[k]) <: AbstractArray
+#                 a[row, idx] .= vec(q[k])
+#             else
+#                 a[row, idx] .= q[k]
+#             end
+#         end
+#     end
+#     return
+# end
+
+function assignparameters!(a::Array{Float64}, row::Int, offset::Int, D::Dict)
+    for k in keys(D[:vec])
+        if k != :vec && k != :length
+            idx = D[:vec][k]
+            if typeof(D[k]) <: AbstractArray
+                a[row, idx .+ offset] .= vec(D[k])
             else
-                a[row, idx] .= q[k]
+                a[row, idx .+ offset] .= D[k]
             end
         end
     end
@@ -61,7 +98,7 @@ end
 
 # TODO add tests
 # TODO should be updatep!(p, ∇U, q, ε)
-function updatep!(∇U, q::Dict, p::Vector{Float64}, ε::Float64)
+function updatep!(p::Vector{Float64}, ∇U, q::Dict, ε::Float64)
     @assert length(p) == q[:length] "Can't multiply ∇U(q) by p, differening lengths."
     gq = ∇U(q)
     for k in keys(q[:vec])
@@ -88,4 +125,15 @@ function setmetric(metric::String, ndim::Int)::AbstractArray{Float64}
     end
 
     return M
+end
+
+
+function checkinitialization(q, U, ∇U)
+    lq = U(q)
+    @assert isfinite(lq) && !isnan(lq) "Poor initialization, model(q, d) is not finite or is nan."
+    p = zeros(q[:length])
+    updatep!(p, ∇U, q, 1.0)
+    gq = sum(abs.(p))
+    @assert isfinite(gq) && !isnan(gq) "Poor initialization, gradient(model(q, d)) is not finite or is nan."
+    return
 end

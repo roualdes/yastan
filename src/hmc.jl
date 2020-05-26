@@ -7,6 +7,8 @@ end
 
 function checkcontrol(c::Dict)
 
+    # TODO would like to avoid making this copy
+    # create c = Dict{Symbol, Any}(...)
     c = convert(Dict{Any, Any}, c)
 
     # TODO (ear) add checks on all values
@@ -74,37 +76,50 @@ function stan(U, q; control::Dict = Dict())
                          :control => control)
 end
 
-function hmc(U, q; control::Dict = Dict())
+function hmc(model, q, d; control::Dict = Dict())
+
+    control = checkcontrol(control)
+
+    if !haskey(q, :vec)
+        prepareparameters!(q, keys(q))
+    end
+
+    datakeys = collect(keys(d))
+
+    U(q) = model(q, d)
+    ∇U = q -> first(Zygote.gradient(U, q))
+    checkinitialization(q, U, ∇U)
+
+    transformedparameterskeys = setdiff(keys(d), datakeys)
+    println(transformedparameterskeys)
+    if !haskey(d, :vec)
+        prepareparameters!(d, transformedparameterskeys)
+    end
 
     ndim = q[:length]
-    control = checkcontrol(control)
     M = setmetric(control[:metric], ndim)
-    # TODO assert finite, U and ∇U,
-    # check if !haskey(q[:vec]) prepareq!(q) end
-    # checkinitialization(q)
+
+    # store parameters + transfomred parameters
+    samplesdim = ndim + d[:length]
+    I = control[:iterations] + control[:iterations_warmup]
+    samples = zeros(I, samplesdim)
+    assignparameters!(samples, 1, 0, q)
+    assignparameters!(samples, 1, ndim, d)
 
     # advance RandomNumbers RNG
     # TODO (ear) figure out their type structure
     # and document this requirement.
     advance!(control[:rng], convert(UInt64, 1 << 50 * control[:chainid]))
-    ∇U = q -> first(Zygote.gradient(U, q))
-    I = control[:iterations] + control[:iterations_warmup]
-    # q = initializesample(ndim, U, ∇U, control) # TODO goto checkinitialization
-
-    samples = zeros(I, ndim)
-    assignq!(samples, 1, q)
     psample = generatemomentum(control[:rng], ndim, M)
 
-    ε = findepsilon(1.0, deepcopy(q), deepcopy(psample),
-                    U, ∇U, M, control)
+    ε = findepsilon(1.0, deepcopy(q), deepcopy(psample), U, ∇U, M, control)
     μ = control[:μ]
     εbar = 0.0
     sbar = 0.0
     xbar = 0.0
 
     W = WelfordState(zeros(ndim), zero(M), 0)
-    openwindow, closewindow, lastwindow, windowstep =
-        adaptionwindows(control)
+    openwindow, closewindow, lastwindow, windowstep = adaptionwindows(control)
 
     leaps = zeros(Int, I)
     treedepths = zeros(Int, I)
@@ -115,7 +130,7 @@ function hmc(U, q; control::Dict = Dict())
     stepsizecounter = 0
 
     for i = 2:I
-        updateq!(q, samples[i - 1, :])
+        updateq!(q, samples[i - 1, 1:ndim])
         p = generatemomentum(control[:rng], ndim, M)
         H0 = hamiltonian(q, p, U, M)
         H = H0
@@ -214,8 +229,9 @@ function hmc(U, q; control::Dict = Dict())
             end
         end # end while
 
-        assignq!(samples, i, qsample)
         energies[i] = hamiltonian(qsample, psample, U, M)
+        assignparameters!(samples, i, 0, qsample)
+        assignparameters!(samples, i, ndim, d)
         treedepths[i] = depth
         leaps[i] = nleapfrog
         εs[i] = ε
@@ -226,7 +242,7 @@ function hmc(U, q; control::Dict = Dict())
                 adaptstepsize(acceptstats[i], stepsizecounter, sbar, xbar, μ, control)
 
             if openwindow <= i <= lastwindow
-                W = accmoments(W, samples[i, :])
+                W = accmoments(W, samples[i, 1:ndim])
             end
 
             if i == closewindow
@@ -235,8 +251,7 @@ function hmc(U, q; control::Dict = Dict())
                 W = WelfordState(zeros(ndim), zero(M), 0)
 
                 # reset stepsize
-                ε = findepsilon(ε, deepcopy(qsample), deepcopy(psample),
-                                U, ∇U, M, control)
+                ε = findepsilon(ε, deepcopy(qsample), deepcopy(psample), U, ∇U, M, control)
                 μ = log(10 * ε)
                 sbar = 0.0
                 xbar = 0.0
@@ -361,9 +376,9 @@ function buildtree!(depth::Int, q::Dict, p::Vector{Float64},
 end
 
 function leapfrog!(q::Dict, p::Vector{Float64}, ∇U, ε::Float64, M::Array{Float64})
-    updatep!(∇U, q, p, 0.5 * ε)
+    updatep!(p, ∇U, q, 0.5 * ε)
     updateq!(q, ε * rhosharp(p, M); addself = true)
-    updatep!(∇U, q, p, 0.5 * ε)
+    updatep!(p, ∇U, q, 0.5 * ε)
     return
 end
 
