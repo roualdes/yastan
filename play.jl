@@ -1,18 +1,15 @@
 using Revise
 using YaStan
+
 using Plots; plotly();
 using Statistics
 using StatsPlots
 using LinearAlgebra
 using SparseArrays
 using Distributions
-using Random
-using RandomNumbers.PCG
-using DelimitedFiles
 using BenchmarkTools
 using Zygote
-using SharedArrays
-using Distributed; addprocs(3);
+
 
 # @everywhere include("hmc.jl")
 # includet("src/hmc.jl")
@@ -21,31 +18,54 @@ using Distributed; addprocs(3);
 # includet("src/utilities.jl")
 # @everywhere include("models.jl")
 
-
-
-q = Dict{Symbol, Any}(:xraw => 0.5);
+q = Dict{Symbol, Any}(:xraw => 1.0);
 d = Dict{Symbol, Any}(:mu => 14.5, :sigma => 3.14);
 
-function model_(q, d)
+function model(q, d)
     # TODO figure out how to store this
     d[:x] = d[:mu] .+ q[:xraw] * d[:sigma] # transformed parameter
-    return sum(YaStan.normal_.(q[:xraw], 0.0, 1.0))
+    return YaStan.normal_.(q[:xraw], 0.0, 1.0)
+end
+
+
+
+
+N = 1000
+X = randn(N);
+a = 4.0
+b = -2.0
+Y = a .+ X * b .+ randn(N);
+
+d = Dict{Symbol, Any}(:x => X, :y => Y);
+q = Dict{Symbol, Any}(:alpha => randn(), # all Real valued parameters
+                      :beta => randn(),
+                      :sigma => randn());
+
+function lm(q, d)
+    L = 0.0
+    prior = 0.0
+
+    # transformed parameter
+    d[:s] = exp(q[:sigma])
+
+    mu = q[:alpha] .+ d[:x] * q[:beta]
+    L += sum(YaStan.normal_.(d[:y],  mu, d[:s])) - q[:sigma]
+
+    prior += YaStan.normal_(q[:alpha], 0.0, 3.0)
+    prior += sum(YaStan.normal_.(q[:beta], 0.0, 3.0))
+
+    prior += YaStan.exponential_(d[:s], 1 / 3.0)
+
+    return L + prior
 end
 
 # single chain
-samples, diagnostics = YaStan.hmc(model_, q, d);
+samples, i = YaStan.hmc(lm, q, d);
 
-
-# multiple chains
-# @benchmark
-samples, diagnostics = stan(g, q);
-
-
+mean(log.(samples[:, 3]))
 round.(mean(samples, dims=1), digits=1)
-round.(std(samples, dims=1), digits=1)
 
-round.(mean(samples2[:, :, :], dims=1), digits=1)
-round.(std(samples2[:, :, :], dims=1), digits=1)
+round.(std(samples, dims=1), digits=1)
 
 map(i -> round(ess_bulk(samples[:, :, 1])), 1)
 map(i -> round(ess_tail(samples[:, :, 1])), 1:ndim)

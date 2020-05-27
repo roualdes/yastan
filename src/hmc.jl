@@ -35,12 +35,31 @@ function checkcontrol(c::Dict)
     return c
 end
 
-function stan(U, q; control::Dict = Dict())
+function sample(model, q, d; control::Dict = Dict())
 
     control = checkcontrol(control)
-    I = control[:iterations] + control[:iterations_warmup]
-    chains = control[:chains]
+
+    if !haskey(q, :vec)
+        prepareparameters!(q, keys(q))
+    end
+
+    U(q) = model(q, d)
+    ∇U = q -> first(Zygote.gradient(U, q))
+
+    datakeys = collect(keys(d))
+    checkinitialization(q, U, ∇U)
+    transformedparameterskeys = setdiff(keys(d), datakeys)
+
+    if !haskey(d, :vec)
+        prepareparameters!(d, transformedparameterskeys)
+    end
+
+    # store parameters + transfomred parameters
     ndim = q[:length]
+    samplesdim = ndim + d[:length]
+    I = control[:iterations] + control[:iterations_warmup]
+
+    chains = control[:chains]
     M = setmetric(control[:metric], ndim)
 
     samples = SharedArray{Float64}(control[:iterations], chains, ndim)
@@ -54,7 +73,7 @@ function stan(U, q; control::Dict = Dict())
 
     @sync @distributed for chain in 1:control[:chains]
         control = merge(control, Dict(:chainid => chain))
-        samples[:, chain, :], d = hmc(U, ndim; control = control)
+        samples[:, chain, :], d = hmc(U, q, d; control = control)
 
         leaps[:, chain] = d[:leapfrog]
         acceptstats[:, chain] = d[:acceptstat]
@@ -84,32 +103,31 @@ function hmc(model, q, d; control::Dict = Dict())
         prepareparameters!(q, keys(q))
     end
 
-    datakeys = collect(keys(d))
-
     U(q) = model(q, d)
     ∇U = q -> first(Zygote.gradient(U, q))
+    datakeys = collect(keys(d))
     checkinitialization(q, U, ∇U)
 
     transformedparameterskeys = setdiff(keys(d), datakeys)
-    println(transformedparameterskeys)
+
     if !haskey(d, :vec)
         prepareparameters!(d, transformedparameterskeys)
     end
 
-    ndim = q[:length]
-    M = setmetric(control[:metric], ndim)
-
     # store parameters + transfomred parameters
+    ndim = q[:length]
     samplesdim = ndim + d[:length]
     I = control[:iterations] + control[:iterations_warmup]
+
     samples = zeros(I, samplesdim)
     assignparameters!(samples, 1, 0, q)
     assignparameters!(samples, 1, ndim, d)
 
-    # advance RandomNumbers RNG
     # TODO (ear) figure out their type structure
+    # advance RandomNumbers RNG
     # and document this requirement.
     advance!(control[:rng], convert(UInt64, 1 << 50 * control[:chainid]))
+    M = setmetric(control[:metric], ndim)
     psample = generatemomentum(control[:rng], ndim, M)
 
     ε = findepsilon(1.0, deepcopy(q), deepcopy(psample), U, ∇U, M, control)
@@ -268,17 +286,19 @@ function hmc(model, q, d; control::Dict = Dict())
         else
             ε = εbar
         end
-
     end # end for
 
+    cleancontainer(q, [:vec :length])
+    cleancontainer(d, [transformedparameterskeys... [:vec :length]])
+
     postwarmup = control[:iterations_warmup]+1:I
-    return samples[postwarmup, :, :], Dict(:stepsize => εs,
-                                           :leapfrog => leaps,
-                                           :acceptstat => acceptstats,
-                                           :treedepth => treedepths,
-                                           :energy => energies,
-                                           :divergent => divergences,
-                                           :massmatrix => M)
+    return samples[postwarmup, :], Dict(:stepsize => εs,
+                                        :leapfrog => leaps,
+                                        :acceptstat => acceptstats,
+                                        :treedepth => treedepths,
+                                        :energy => energies,
+                                        :divergent => divergences,
+                                        :massmatrix => M)
 end
 
 

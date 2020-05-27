@@ -39,16 +39,23 @@ function prepareparameters!(D::Dict, ks)
     return
 end
 
+function parameternames(D::Dict)
+    a = Array{String}(undef, D[:length])
+    for k in keys(D[:vec])
+        for i in D[:vec][k]
+            a[i] = string(k) * "_" * string(i)
+        end
+    end
+    return a
+end
 
 function assignq!(v::Vector{Float64}, D::Dict)
     for k in keys(D[:vec])
-        if k != :vec && k != :length
-            idx = D[:vec][k]
-            if typeof(D[k]) <: AbstractArray
-                v[idx] .= vec(D[k])
-            else
-                v[idx] .= D[k]
-            end
+        idx = D[:vec][k]
+        if typeof(D[k]) <: AbstractArray
+            v[idx] .= vec(D[k])
+        else
+            v[idx] .= D[k]
         end
     end
     return
@@ -70,13 +77,11 @@ end
 
 function assignparameters!(a::Array{Float64}, row::Int, offset::Int, D::Dict)
     for k in keys(D[:vec])
-        if k != :vec && k != :length
-            idx = D[:vec][k]
-            if typeof(D[k]) <: AbstractArray
-                a[row, idx .+ offset] .= vec(D[k])
-            else
-                a[row, idx .+ offset] .= D[k]
-            end
+        idx = D[:vec][k]
+        if typeof(D[k]) <: AbstractArray
+            a[row, idx .+ offset] .= vec(D[k])
+        else
+            a[row, idx .+ offset] .= D[k]
         end
     end
     return
@@ -135,5 +140,13 @@ function checkinitialization(q, U, ∇U)
     updatep!(p, ∇U, q, 1.0)
     gq = sum(abs.(p))
     @assert isfinite(gq) && !isnan(gq) "Poor initialization, gradient(model(q, d)) is not finite or is nan."
+    return
+end
+
+
+function cleancontainer(D::Dict, ks)
+    for k in ks
+        delete!(D, k)
+    end
     return
 end

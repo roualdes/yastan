@@ -22,6 +22,10 @@ function normal_(x::Real, μ::Real, σ::Real)
     return 0.5 * (d' * d) / (σ * σ)
 end
 
+function exponential_(x::Real, λ::Real)
+    return -log(λ) + λ * x
+end
+
 # TODO figure out how to incorporate reparameterizations? (is that what we should call these)
 function t_(nu::Float64, s::Float64)
     return function(x)

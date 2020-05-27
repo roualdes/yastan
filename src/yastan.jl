@@ -8,11 +8,12 @@ using RandomNumbers.PCG
 using Distributed
 using Statistics
 using FFTW
-@everywhere using SharedArrays
+using Distributed
+using SharedArrays
 
 include("hmc.jl")
-include("convergence.jl")
 include("models.jl")
 include("utilities.jl")
+include("convergence.jl")
 
 end # module
