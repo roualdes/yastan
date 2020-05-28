@@ -1,22 +1,14 @@
 using Revise
 using YaStan
+using Statistics
+using Zygote
 
 using Plots; plotly();
-using Statistics
 using StatsPlots
 using LinearAlgebra
 using SparseArrays
 using Distributions
 using BenchmarkTools
-using Zygote
-
-
-# @everywhere include("hmc.jl")
-# includet("src/hmc.jl")
-# includet("src/convergence.jl")
-# includet("src/models.jl")
-# includet("src/utilities.jl")
-# @everywhere include("models.jl")
 
 q = Dict{Symbol, Any}(:xraw => 1.0);
 d = Dict{Symbol, Any}(:mu => 14.5, :sigma => 3.14);
@@ -27,48 +19,52 @@ function model(q, d)
     return YaStan.normal_.(q[:xraw], 0.0, 1.0)
 end
 
+function f(x)
+    y = Zygote.dropgrad(x * x * x)
+    println(y)
+    return x * x
+end
 
+Zygote.gradient(f, 3.0)
 
 
 N = 1000
-X = randn(N);
+X = randn(N, 3);
 a = 4.0
-b = -2.0
+b = [-2.0; 5.0; 1.0]
 Y = a .+ X * b .+ randn(N);
 
-d = Dict{Symbol, Any}(:x => X, :y => Y);
-q = Dict{Symbol, Any}(:alpha => randn(), # all Real valued parameters
-                      :beta => randn(),
-                      :sigma => randn());
+d = Dict{Symbol, Any}(:x => X, :y => Y); # all real valued parameters
+q = Dict{Symbol, Any}(:alpha => randn(),
+                      :beta => randn(3),
+                      :s => randn());
 
 function lm(q, d)
     L = 0.0
     prior = 0.0
 
-    # transformed parameter
-    d[:s] = exp(q[:sigma])
-
     mu = q[:alpha] .+ d[:x] * q[:beta]
-    L += sum(YaStan.normal_.(d[:y],  mu, d[:s])) - q[:sigma]
+    sigma = exp(q[:s])
+    L += sum(YaStan.normal_.(d[:y],  mu, sigma)) - q[:s]
 
     prior += YaStan.normal_(q[:alpha], 0.0, 3.0)
     prior += sum(YaStan.normal_.(q[:beta], 0.0, 3.0))
 
-    prior += YaStan.exponential_(d[:s], 1 / 3.0)
+    prior += YaStan.exponential_(sigma, 1 / 3.0) - q[:s]
 
     return L + prior
 end
 
 # single chain
-samples, i = YaStan.hmc(lm, q, d);
+samples, i = YaStan.hmc(lm, q, d; control = Dict(:iterations => 4000));
 
 mean(log.(samples[:, 3]))
 round.(mean(samples, dims=1), digits=1)
 
 round.(std(samples, dims=1), digits=1)
 
-map(i -> round(ess_bulk(samples[:, :, 1])), 1)
-map(i -> round(ess_tail(samples[:, :, 1])), 1:ndim)
+map(i -> round(YaStan.ess_bulk(samples[:, i])), 1:4)
+map(i -> round(YaStan.ess_tail(samples[:, i])), 1:4)
 
 map(i -> round(ess_std(samples[:, i, 1]), digits=2), 1:ndim)
 map(i -> round(rhat(samples[:, i, 1]), digits=2), 1:ndim)
